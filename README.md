@@ -124,3 +124,8 @@ checks on Linux and macOS. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
 release rules. A passing `main` build publishes SemVer GitHub releases for
 `fix`, `perf`, `feat`, and breaking changes, with macOS/Linux binaries and
 SHA-256 checksums. Node/pnpm are development tools; the compiled CLI remains Go.
+
+Offline end-to-end tests: `make e2e` drives the compiled TUI in a terminal with
+mock GitHub/Codex processes and real local Git checkouts. These tests also run
+through Husky's `make verify` pre-push gate and required CI checks; no login or
+model calls are needed. See [the test guide](CONTRIBUTING.md#offline-end-to-end-tests).

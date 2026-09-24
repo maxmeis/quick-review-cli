@@ -15,7 +15,7 @@ coverage:
 vet:
 	go vet ./...
 
-verify: build vet coverage
+verify: build vet coverage e2e
 
 clean:
 	rm -rf bin coverage.out
@@ -35,3 +35,7 @@ dist:
 	  done; \
 	done
 	cd dist && shasum -a 256 *.tar.gz > checksums.txt
+
+.PHONY: e2e
+e2e:
+	go test -race -tags=e2e -count=1 -timeout=180s ./tests/e2e
