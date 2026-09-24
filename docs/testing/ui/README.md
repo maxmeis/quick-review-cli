@@ -1,5 +1,7 @@
 # TUI redesign and inspection — 2026-09-24
 
+[Open the interactive HTML preview](preview.html) (standalone, no dependencies).
+
 [Open the complete gallery](index.html). Individual captures: [Chat](chat.png), [Checks](checks.png), [Question](question.png), [Narrow](narrow.png), [Disconnected](disconnected.png), [Launcher](launcher.png), [Light theme](light.png).
 
 These images render actual production `View()` output and its ANSI styles with a monospace font. They are terminal-output captures in a browser, not screenshots of a native terminal window. Terminal fonts and palettes can differ. `screens.json` contains the captured ANSI output for all six tabs and additional states.
