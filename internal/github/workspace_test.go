@@ -329,7 +329,7 @@ func newGitFixture(t *testing.T) gitFixture {
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
 	source := filepath.Join(root, "source")
-	runGit(t, root, "init", "--bare", origin)
+	runGit(t, root, "init", "--bare", "--initial-branch=main", origin)
 	if out, err := exec.Command("git", "init", "-b", "main", source).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}

@@ -2,7 +2,7 @@
 
 Quick Review is a Go terminal app for reviewing GitHub pull requests with a live, read-only Codex review. It uses your existing logged-in GitHub CLI (`gh`) and Codex CLI (`codex`); it does not need a separate GitHub token or OpenAI API key setup.
 
-The interface has six tabs: Chat, Changes, Checks, Agents, Report, and Activity. It supports keyboard and mouse navigation. Review checkouts live in a dedicated directory for each revision and are retained so you can resume a session. Completed Markdown reports are saved in the session directory.
+The interface has six tabs: Chat, Changes, Checks, Agents, Report, and Activity. It supports keyboard and mouse navigation. Review checkouts live in a dedicated directory for each revision. Completed Markdown reports and session history are saved separately from those checkouts.
 
 ## Requirements
 
@@ -62,18 +62,24 @@ To resume, pass the session directory shown in the Activity view or in the saved
 ./bin/review --resume "/path/to/session-directory"
 ```
 
-By default, sessions are stored under `os.UserConfigDir()/quick-review/sessions`. Each session contains its state, activity log, retained revision checkouts, and saved reports. Remove an individual session directory when you no longer need its history, checkouts, or reports.
+By default, sessions are stored under `os.UserConfigDir()/quick-review/sessions`. Each session contains its state, activity log, retained revision checkouts, and saved reports. You can remove a session directory when you no longer need its history or reports.
 
 ## Working in the interface
 
-- Select tabs with `Alt+1` through `Alt+6`, `Tab`/`Shift+Tab`, or a mouse click.
-- In Chat, press Enter to send a message; use `Alt+Enter` to add a line.
+- Select tabs with `Alt+1` through `Alt+6`, `Tab`/`Shift+Tab` outside Chat, or a mouse click.
+- In Chat, press Enter to send a message; use `Alt+Enter` to add a line. Press `F2` to focus question options, use the arrow keys to choose, and press Enter to answer. Press `a` for a freeform answer and Esc to leave question focus.
 - Press `Ctrl+P` for commands: `refresh`, `pause`, `resume`, `report`, or `quit`.
-- In Activity, press `/` or `f` to search and `s` to cycle source filters.
-- Use `q` or `Ctrl+C` to request quit; confirm with `y` or keep watching with `n`.
-- Use the mouse wheel, arrow keys, or Page Up/Page Down to scroll.
+- In Activity, press `/` or `f` to search, `s` to cycle source filters (All, You, Codex, Agents, App, GitHub, CI), and Enter or click an event to expand its details.
+- Use `q` outside Chat or `Ctrl+C` to open the quit dialog. Choose `y` or Enter to keep checkouts and exit, `d` to remove clean checkouts and exit, or `n`, Esc, or `q` to keep watching.
+- Use the mouse wheel, arrow keys, or Page Up/Page Down to scroll. Tab scroll positions are remembered, and new Activity entries show a badge when you have scrolled away from the latest events.
 
-The Changes tab shows changed files and the diff. Checks and reports can be opened with Enter. Reports include the exact reviewed head and merge-base and are marked stale when a newer revision arrives.
+The Changes tab shows changed files and the diff. Checks and reports can be opened with Enter. Reports include the exact reviewed head and merge-base.
+
+Quick Review polls GitHub at the configured interval. Head, base, CI, and PR state changes appear in Activity with their source and revision SHA. When the head or base changes, the current review stays on its existing checkout until its turn ends; Quick Review then prepares the latest revision and starts another review. Older reports are marked stale. The header shows both the latest head and the revision currently reviewed, and indicates when GitHub data is stale.
+
+If `terminal-notifier` is installed, Quick Review also sends best-effort desktop notifications for completed reviews and PR revision, check, or state updates. The title includes a notification bell, and the subtitle identifies the repository and PR number. A notifier process is stopped after three seconds; missing or failed notifications do not interrupt the review.
+
+When quitting, `d` removes the session's checkouts only after every checkout passes `git status --porcelain --untracked-files=all`. If a checkout is dirty, contains untracked files, is a symlink, or cannot be checked, Quick Review preserves the whole checkout directory and reports the error. Session state, Activity history, and saved reports are retained either way.
 
 ## Review safety
 

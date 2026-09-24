@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -566,9 +567,10 @@ func TestNotify(t *testing.T) {
 		}
 		return "/bin/terminal-notifier", nil
 	}
-	run := func(path string, args ...string) error {
+	run := func(ctx context.Context, path string, args ...string) error {
 		called = true
-		if path != "/bin/terminal-notifier" || strings.Join(args, " ") != "-title done -subtitle octo/repo · PR #9 -message finished" {
+		deadline, hasDeadline := ctx.Deadline()
+		if !hasDeadline || time.Until(deadline) > notifierTimeout || path != "/bin/terminal-notifier" || strings.Join(args, " ") != "-title 🔔 done -subtitle octo/repo · PR #9 -message finished" {
 			t.Errorf("notification args %q %v", path, args)
 		}
 		return errors.New("notifier failed")
@@ -585,7 +587,7 @@ func TestNotifyUsesInjectableRunners(t *testing.T) {
 	t.Cleanup(func() { lookPathRunner, commandRunner = oldLookPath, oldRun })
 	called := false
 	lookPathRunner = func(string) (string, error) { return "mock-notifier", nil }
-	commandRunner = func(path string, _ ...string) error {
+	commandRunner = func(_ context.Context, path string, _ ...string) error {
 		called = path == "mock-notifier"
 		return errors.New("ignored notification failure")
 	}
@@ -595,8 +597,22 @@ func TestNotifyUsesInjectableRunners(t *testing.T) {
 	}
 }
 
+func TestNotifyTimeoutBoundsCommand(t *testing.T) {
+	called := false
+	notifyWithTimeout(domain.PR{Owner: "owner", Repo: "repo", Number: 21}, "updated", "new revision", 5*time.Millisecond,
+		func(string) (string, error) { return "notifier", nil },
+		func(ctx context.Context, _ string, _ ...string) error {
+			called = true
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	if !called {
+		t.Fatal("notification command was not started")
+	}
+}
+
 func TestDefaultCommandRunner(t *testing.T) {
-	if err := commandRunner(os.Args[0], "-test.run=^$"); err != nil {
+	if err := commandRunner(context.Background(), os.Args[0], "-test.run=^$"); err != nil {
 		t.Fatalf("default command runner failed to invoke test binary: %v", err)
 	}
 }

@@ -4,6 +4,7 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -447,19 +448,27 @@ func Notify(repo domain.PR, title, message string) {
 }
 
 type lookPathFunc func(string) (string, error)
-type commandFunc func(string, ...string) error
+type commandFunc func(context.Context, string, ...string) error
+
+const notifierTimeout = 3 * time.Second
 
 var (
 	lookPathRunner lookPathFunc = exec.LookPath
-	commandRunner  commandFunc  = func(path string, args ...string) error {
-		return exec.Command(path, args...).Run()
+	commandRunner  commandFunc  = func(ctx context.Context, path string, args ...string) error {
+		return exec.CommandContext(ctx, path, args...).Run()
 	}
 )
 
 func notify(repo domain.PR, title, message string, lookPath lookPathFunc, run commandFunc) {
+	notifyWithTimeout(repo, title, message, notifierTimeout, lookPath, run)
+}
+
+func notifyWithTimeout(repo domain.PR, title, message string, timeout time.Duration, lookPath lookPathFunc, run commandFunc) {
 	path, err := lookPath("terminal-notifier")
 	if err != nil {
 		return
 	}
-	_ = run(path, "-title", title, "-subtitle", fmt.Sprintf("%s · PR #%d", Identity(repo), repo.Number), "-message", message)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_ = run(ctx, path, "-title", "🔔 "+strings.TrimSpace(title), "-subtitle", fmt.Sprintf("%s · PR #%d", Identity(repo), repo.Number), "-message", message)
 }

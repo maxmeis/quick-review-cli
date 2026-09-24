@@ -452,6 +452,13 @@ func TestControllerRefreshAndPrepareLatestGuards(t *testing.T) {
 	if len(agent.turnTexts) != 1 || c.state.Connection != "Connected" {
 		t.Fatalf("disconnected agent was not reconnected: turns=%d connection=%s", len(agent.turnTexts), c.state.Connection)
 	}
+	c.activeTurn = ""
+	c.client = nil
+	c.prepareLatest(context.Background())
+	waitFor(t, func() bool { return len(c.jobs) > 0 })
+	if prepared := (<-c.jobs).(prepared); prepared.err != nil || prepared.client != agent {
+		t.Fatalf("prepareLatest did not route disconnected client through session start: %+v", prepared)
+	}
 }
 
 func TestControllerRetainsReportsAndQueuedWatcher(t *testing.T) {
