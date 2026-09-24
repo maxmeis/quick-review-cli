@@ -115,3 +115,12 @@ A real authenticated end-to-end run, failures found, and saved example reports a
 Each session maintains **`reports/report.md`**, atomically replaced as the lead reviewer completes report sections and again when the review finishes. The Report tab shows the reviewed commits, last update time, and whether the report is stale or a review is still running. Interrupted partial reports remain labeled in progress. Activity retains the event timeline; the report tab has no version history. Resuming an older session consolidates its latest report into the canonical file; pre-existing report files are retained as legacy artifacts.
 
 Mermaid flowcharts and sequence diagrams render locally as Unicode diagrams inside the Report tab. The Markdown file retains its original Mermaid fences. Source is also shown below the terminal preview, since terminal layouts can simplify shapes and edge labels. Unsupported directives/types, oversized diagrams, and diagrams wider than the pane show their source with an explanation. Enlarge the terminal to display wider diagrams. Rendering uses [mermaidascii](https://github.com/coreequip/mermaidascii), without a browser or external service.
+
+### Contribution checks and releases
+
+Run `pnpm install` to activate Husky: commit messages must follow Conventional
+Commits, and pushes run the strict `make verify` coverage gate. CI repeats these
+checks on Linux and macOS. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
+release rules. A passing `main` build publishes SemVer GitHub releases for
+`fix`, `perf`, `feat`, and breaking changes, with macOS/Linux binaries and
+SHA-256 checksums. Node/pnpm are development tools; the compiled CLI remains Go.

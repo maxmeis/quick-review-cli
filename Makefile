@@ -19,3 +19,19 @@ verify: build vet coverage
 
 clean:
 	rm -rf bin coverage.out
+
+# CGO-free archives for the supported macOS and Linux platforms.
+.PHONY: dist
+dist:
+	rm -rf dist
+	mkdir -p dist
+	@set -eu; for os in darwin linux; do \
+	  for arch in amd64 arm64; do \
+	    name="quick-review-$$os-$$arch"; \
+	    mkdir -p "dist/$$name"; \
+	    CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -o "dist/$$name/review" ./cmd/review; \
+	    tar -czf "dist/$$name.tar.gz" -C "dist/$$name" review; \
+	    rm -rf "dist/$$name"; \
+	  done; \
+	done
+	cd dist && shasum -a 256 *.tar.gz > checksums.txt
