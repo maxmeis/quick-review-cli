@@ -239,3 +239,19 @@ func TestQuestionReplyCanBeRetriedWithoutLosingAnswers(t *testing.T) {
 		t.Fatal(string(encoded))
 	}
 }
+
+func TestReportPreservesFindingsAcrossWatcherAcknowledgements(t *testing.T) {
+	c, _ := protocolController(t)
+	c.reviewTurn = true
+	for _, text := range []string{"## Findings\nP1: progress.go:8 truncates Percent(1,2) to zero.", "CI on the newer head is now passing."} {
+		c.onItem(wireParams{Item: wireItem{Type: "agentMessage", Phase: "final_answer", Text: text}}, true, false)
+	}
+	c.onProtocol(context.Background(), codex.Message{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)})
+	if len(c.state.Reports) != 1 {
+		t.Fatal("missing report")
+	}
+	report := c.state.Reports[0].Text
+	if !strings.Contains(report, "P1: progress.go:8") || !strings.Contains(report, "CI on the newer head") {
+		t.Fatalf("report lost review content: %s", report)
+	}
+}

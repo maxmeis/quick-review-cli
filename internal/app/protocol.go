@@ -151,7 +151,9 @@ func (c *Controller) onItem(p wireParams, complete, child bool) {
 			if !child {
 				c.state.DraftReply = ""
 				if it.Phase == "final_answer" || it.Phase == "" {
-					c.finalText = it.Text
+					// Steered watcher updates can produce several final messages in one turn.
+					// Preserve the complete review before any follow-up acknowledgements.
+					c.finalText = strings.TrimSpace(c.finalText + "\n\n" + it.Text)
 				}
 			}
 		}
