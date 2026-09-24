@@ -120,13 +120,21 @@ func TestDemoEventsAndActions(t *testing.T) {
 			t.Fatal("not refreshed")
 		}
 	}
-	// Exercise replacement of a pending UI frame without dropping activity.
+	// Do not consume the pending UI frame until shutdown is acknowledged.
+	// An action send only synchronizes reception, not its subsequent publish;
+	// the final quit handshake guarantees both refresh frames were published.
 	actions <- domain.Action{Kind: "refresh"}
 	actions <- domain.Action{Kind: "refresh"}
-	<-updates
 	actions <- domain.Action{Kind: "confirm-quit"}
 	if e := <-done; e != nil {
 		t.Fatal(e)
+	}
+	final := <-updates
+	last := final.Events[len(final.Events)-2:]
+	for _, event := range last {
+		if event.Kind != "refresh" {
+			t.Fatalf("pending-frame replacement lost activity: %+v", last)
+		}
 	}
 }
 func TestDemoShutdown(t *testing.T) {
