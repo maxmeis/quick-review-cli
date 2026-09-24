@@ -27,26 +27,26 @@ const (
 var tabNames = []string{"Chat", "Changes", "Checks", "Agents", "Report", "Activity"}
 
 type model struct {
-	state                                    domain.State
-	active                                   tab
-	width, height                            int
-	scroll, newActivity                      int
-	follow                                   bool
-	dispatch                                 func(domain.Action)
-	composer                                 textarea.Model
-	launcher, search, command, answer        textinput.Model
-	launcherMode, searchMode, commandMode    bool
-	filter                                   string
-	sourceFilter                             string
-	quitDialog                               bool
-	suppressQuit                             bool
-	questionIndex, questionChoice            int
-	answerMode                               bool
-	selectedEvent, selectedFile, reportIndex int
-	eventDetail                              bool
-	questionFocus                            bool
-	scrollByTab                              map[tab]int
-	noColor                                  bool
+	state                                            domain.State
+	active                                           tab
+	width, height                                    int
+	scroll, newActivity                              int
+	follow                                           bool
+	dispatch                                         func(domain.Action)
+	composer                                         textarea.Model
+	launcher, search, command, answer                textinput.Model
+	launcherMode, launching, searchMode, commandMode bool
+	filter                                           string
+	sourceFilter                                     string
+	quitDialog                                       bool
+	suppressQuit                                     bool
+	questionIndex, questionChoice                    int
+	answerMode                                       bool
+	selectedEvent, selectedFile, reportIndex         int
+	eventDetail                                      bool
+	questionFocus                                    bool
+	scrollByTab                                      map[tab]int
+	noColor                                          bool
 }
 
 func safeText(value string) string {
@@ -214,6 +214,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.state.Snapshot.PR.Number > 0 {
 			m.launcherMode = false
+			m.launching = false
 		}
 		if m.questionIndex >= len(m.state.Questions) {
 			m.questionIndex = len(m.state.Questions) - 1
@@ -237,12 +238,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.scrollBy(3), nil
 			}
 			if v.Button == tea.MouseButtonLeft {
-				w := max(36, min(180, m.width))
+				w := max(20, min(180, m.width))
 				if m.quitDialog && v.Y == 3 {
 					line := quitLine(w)
 					keep := strings.Index(line, "[y]")
 					remove := strings.Index(line, "[d]")
 					watch := strings.Index(line, "[n]")
+					if keep < 0 {
+						keep = strings.Index(line, "y ")
+					}
+					if remove < 0 {
+						remove = strings.Index(line, "d ")
+					}
+					if watch < 0 {
+						watch = strings.Index(line, "n ")
+					}
 					switch {
 					case v.X >= keep && v.X < remove:
 						m.emit("confirm-quit", "", "")
@@ -265,11 +275,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.active == activityTab && v.Y >= 4 {
 					rows, mapping := m.activityRows()
-					visible := max(1, m.height-5)
+					rows, mapping = wrapMappedRows(rows, mapping, effectiveWidth(m.width))
+					visible := max(0, m.height-5-m.overlayRows())
 					end := max(0, len(rows)-m.scroll)
 					start := max(0, end-visible)
 					row := start + v.Y - 3
-					if row >= 0 && row < len(mapping) {
+					if v.Y-3 >= 0 && v.Y-3 < visible && row >= 0 && row < len(mapping) {
 						m.selectedEvent = mapping[row]
 					} else {
 						m.selectedEvent = -1
@@ -280,12 +291,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.active == checksTab && v.Y >= 4 {
 					rows, mapping := m.checkRows()
-					visible := max(1, m.height-5)
+					rows, mapping = wrapMappedRows(rows, mapping, effectiveWidth(m.width))
+					visible := max(0, m.height-5-m.overlayRows())
 					end := max(0, len(rows)-m.scroll)
 					start := max(0, end-visible)
 					row := start + v.Y - 3
 					idx := -1
-					if row >= 0 && row < len(mapping) {
+					if v.Y-3 >= 0 && v.Y-3 < visible && row >= 0 && row < len(mapping) {
 						idx = mapping[row]
 					}
 					if idx >= 0 {
@@ -294,22 +306,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				if m.active == reportTab && v.Y >= 4 {
-					m.openReport()
+					rows, mapping := m.reportRows()
+					rows, mapping = wrapMappedRows(rows, mapping, effectiveWidth(m.width))
+					visible := max(0, m.height-5-m.overlayRows())
+					end := max(0, len(rows)-m.scroll)
+					start := max(0, end-visible)
+					row := start + v.Y - 3
+					if v.Y-3 >= 0 && v.Y-3 < visible && row >= 0 && row < len(mapping) && mapping[row] >= 0 {
+						m.reportIndex = mapping[row]
+						m.openReport()
+					}
 				}
 				if m.active == chatTab && m.questionFocus && len(m.state.Questions) > 0 {
 					q := m.state.Questions[max(0, min(m.questionIndex, len(m.state.Questions)-1))]
-					fixed := len(q.Options) + 7
-					if m.answerMode {
-						fixed++
-					}
-					bodyHeight := max(1, m.height-3-fixed)
-					questionStart := 3 + bodyHeight
-					idx := v.Y - questionStart - 2
-					if idx >= 0 && idx < len(q.Options) {
-						m.questionChoice = idx
-						m.emit("answer", q.Options[idx], q.ID)
+					_, _, qrows, qmap, bodyHeight := m.chatGeometry(effectiveWidth(m.width), max(6, m.height))
+					idx := v.Y - (3 + bodyHeight)
+					if idx >= 0 && idx < len(qmap) && qmap[idx] >= 0 {
+						choice := qmap[idx]
+						m.questionChoice = choice
+						m.emit("answer", q.Options[choice], q.ID)
 						m.questionFocus = false
 					}
+					_ = qrows
 				}
 			}
 		}
@@ -539,7 +557,7 @@ func (m model) updateLauncher(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(m.launcher.Value())
 		if text != "" {
 			m.emit("start", text, "")
-			m.launcherMode = false
+			m.launching = true
 		}
 		return m, nil
 	}
@@ -617,8 +635,8 @@ func (m *model) runCommand(s string) {
 
 func (m model) View() string {
 	w := m.width
-	if w < 36 {
-		w = 36
+	if w < 20 {
+		w = 20
 	}
 	if w > 180 {
 		w = 180
@@ -634,9 +652,15 @@ func (m model) View() string {
 	if prState != "" {
 		prState = " · " + prState
 	}
-	line1 := hs.Render(" QUICK REVIEW ") + ts.Render(fmt.Sprintf(" · %s/%s #%d  %s%s", pr.Owner, pr.Repo, pr.Number, m.state.Snapshot.Title, prState))
+	line1 := hs.Render(" QUICK REVIEW ") + ts.Render(fmt.Sprintf(" · %s/%s #%d%s  %s", pr.Owner, pr.Repo, pr.Number, prState, oneLine(m.state.Snapshot.Title)))
 	if pr.Number == 0 {
 		line1 = hs.Render(" QUICK REVIEW ") + ts.Render(" · pull request review")
+	}
+	if w < 82 && pr.Number > 0 {
+		line1 = hs.Render(" QUICK REVIEW ") + ts.Render(fmt.Sprintf(" · %s/%s #%d%s", pr.Owner, pr.Repo, pr.Number, prState))
+	}
+	if w < 36 && pr.Number > 0 {
+		line1 = hs.Render(fmt.Sprintf("%s/%s #%d %s", pr.Owner, pr.Repo, pr.Number, strings.TrimPrefix(prState, " · ")))
 	}
 	ci := ciSummary(m.state.Snapshot.Checks)
 	conn := m.state.Connection
@@ -664,11 +688,36 @@ func (m model) View() string {
 		ciDot = "●"
 	}
 	line2 := ciDot + " CI " + ci + "   ·   head " + first(sha, "—") + "   ·   " + reviewed + "   ·   " + conn
+	if w < 82 {
+		line2 = ciDot + " CI " + ci + " · h" + shortN(sha, 6) + " r" + shortN(m.state.ReviewedHead, 6)
+		if strings.Contains(strings.ToLower(conn), "stale") {
+			line2 += " · GitHub stale"
+		} else {
+			line2 += " · " + first(conn, "connected")
+		}
+	}
+	if w < 50 {
+		connectionLabel := "ok"
+		if strings.Contains(strings.ToLower(conn), "stale") {
+			connectionLabel = "stale"
+		}
+		line2 = fmt.Sprintf("CI %s h%s r%s %s", ci, shortN(first(sha, "?"), 4), shortN(first(m.state.ReviewedHead, "?"), 4), connectionLabel)
+	}
+	if w < 36 {
+		connectionLabel := "ok"
+		if strings.Contains(strings.ToLower(conn), "stale") {
+			connectionLabel = "stale"
+		}
+		line2 = fmt.Sprintf("CI %s h%s r%s %s", ci, shortN(first(sha, "?"), 3), shortN(first(m.state.ReviewedHead, "?"), 3), connectionLabel)
+	}
 	if m.state.Paused {
 		line2 += "   ·   PAUSED"
 	}
 	if pr.Number == 0 {
 		line2 = " Paste a GitHub pull request URL to begin"
+		if m.state.Error != "" {
+			line2 = " Error: " + m.state.Error
+		}
 	}
 	if m.newActivity > 0 {
 		line2 += fmt.Sprintf("   ·   %d new events ↓", m.newActivity)
@@ -687,60 +736,157 @@ func (m model) View() string {
 	if m.quitDialog || ((m.state.QuitRequested || m.state.ClosedPrompt) && !m.suppressQuit) {
 		content = quitLine(w) + "\n" + content
 	}
-	return lipgloss.NewStyle().Width(w).Render(line1 + "\n" + line2 + "\n" + tabs + "\n" + content)
+	lines := []string{charmansi.TruncateWc(oneLine(line1), w, "…"), charmansi.TruncateWc(oneLine(line2), w, "…"), tabs}
+	lines = append(lines, wrapRows(strings.Split(content, "\n"), w)...)
+	h := max(6, m.height)
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	return strings.Join(lines, "\n")
 }
 func (m model) launcherView() string {
-	return "\n  Review a pull request\n\n  Enter a GitHub PR URL and Quick Review will connect to the session.\n\n  " + m.launcher.View() + "\n\n  Press Enter to start · Esc to exit\n"
+	status := "Press Enter to start · Esc to exit"
+	if m.state.Error != "" {
+		status = "Error: " + m.state.Error + " · edit the URL and try again"
+	} else if m.launching {
+		status = "Connecting to the pull request…"
+	}
+	return "\n  Review a pull request\n\n  Enter a GitHub PR URL and Quick Review will connect to the session.\n\n  " + m.launcher.View() + "\n\n  " + status + "\n"
 }
-func (m model) chatView() string {
+func effectiveWidth(width int) int { return max(20, min(180, width)) }
+func (m model) overlayRows() int {
+	n := 0
+	if m.commandMode {
+		n++
+	}
+	if m.searchMode {
+		n++
+	}
+	if m.quitDialog || ((m.state.QuitRequested || m.state.ClosedPrompt) && !m.suppressQuit) {
+		n++
+	}
+	return n
+}
+func wrapRows(rows []string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	out := []string{}
+	for _, row := range rows {
+		parts := strings.Split(row, "\n")
+		for _, part := range parts {
+			wrapped := charmansi.WrapWc(part, width, " /.:,·")
+			out = append(out, strings.Split(wrapped, "\n")...)
+		}
+	}
+	return out
+}
+func wrapMappedRows(rows []string, mapping []int, width int) ([]string, []int) {
+	wrapped := []string{}
+	mapped := []int{}
+	for i, row := range rows {
+		idx := -1
+		if i < len(mapping) {
+			idx = mapping[i]
+		}
+		parts := wrapRows([]string{row}, width)
+		for _, part := range parts {
+			wrapped = append(wrapped, part)
+			mapped = append(mapped, idx)
+		}
+	}
+	return wrapped, mapped
+}
+func oneLine(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\t", " ") }
+func shortN(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func (m model) questionRows(width int, height int) ([]string, []int) {
+	rows := []string{}
+	mapping := []int{}
+	if len(m.state.Questions) == 0 {
+		return rows, mapping
+	}
+	q := m.state.Questions[max(0, min(m.questionIndex, len(m.state.Questions)-1))]
+	appendRows := func(text string, option int) {
+		parts := wrapRows([]string{text}, width)
+		for _, part := range parts {
+			rows = append(rows, part)
+			mapping = append(mapping, option)
+		}
+	}
+	appendRows("Question · "+q.Title, -1)
+	if height >= 14 {
+		appendRows(q.Prompt, -1)
+	}
+	for i, option := range q.Options {
+		mark := "  "
+		if m.questionFocus && i == m.questionChoice {
+			mark = "› "
+		}
+		appendRows(mark+fmt.Sprintf("%d. %s", i+1, option), i)
+	}
+	if height >= 14 {
+		if m.questionFocus {
+			appendRows("F2/Esc leave options · Enter answers · a for freeform", -1)
+		} else {
+			appendRows("F2 choose an answer", -1)
+		}
+	}
+	return rows, mapping
+}
+func (m model) chatGeometry(width, height int) ([]string, []int, []string, []int, int) {
 	timeline := make([]string, 0, len(m.state.Events)+4)
 	for _, event := range m.state.Events {
 		timeline = append(timeline, formatEvent(event))
 	}
 	if strings.TrimSpace(m.state.DraftReply) != "" {
-		streaming := "Codex · streaming\n" + strings.TrimSpace(m.state.DraftReply)
-		rendered := lipgloss.NewStyle().Width(max(20, m.width-6)).Render(streaming)
-		timeline = append(timeline, strings.Split(rendered, "\n")...)
+		timeline = append(timeline, "Codex · streaming\n"+strings.TrimSpace(m.state.DraftReply))
 	}
 	if len(timeline) == 0 {
 		timeline = append(timeline, "No conversation yet. Ask a question below or start a review.")
 	}
-	questionRows := []string{}
-	if len(m.state.Questions) > 0 {
-		q := m.state.Questions[max(0, min(m.questionIndex, len(m.state.Questions)-1))]
-		questionRows = append(questionRows, "Question · "+q.Title)
-		questionRows = append(questionRows, q.Prompt)
-		for i, option := range q.Options {
-			mark := "  "
-			if m.questionFocus && i == m.questionChoice {
-				mark = "› "
-			}
-			questionRows = append(questionRows, mark+fmt.Sprintf("%d. %s", i+1, option))
-		}
-		if m.questionFocus {
-			questionRows = append(questionRows, "F2/Esc leave options · Enter answers · a for freeform")
-		} else {
-			questionRows = append(questionRows, "F2 choose an answer")
-		}
-	}
-	fixed := len(questionRows) + 4
+	timeline, mapping := wrapMappedRows(timeline, nil, width)
+	qrows, qmap := m.questionRows(width, height)
+	composer := wrapRows(strings.Split(m.composer.View(), "\n"), width)
+	answer := []string{}
 	if m.answerMode {
+		answer = wrapRows([]string{"Freeform answer: " + m.answer.View()}, width)
+	}
+	fixed := len(qrows) + len(answer) + 1 + len(composer) + 1
+	if height >= 14 {
 		fixed++
 	}
-	bodyHeight := max(1, m.height-3-fixed)
+	fixed += m.overlayRows()
+	bodyHeight := max(0, height-3-fixed)
+	return timeline, mapping, qrows, qmap, bodyHeight
+}
+func (m model) chatView() string {
+	width := effectiveWidth(m.width)
+	height := max(6, m.height)
+	timeline, _, qrows, _, bodyHeight := m.chatGeometry(width, height)
 	end := max(0, len(timeline)-m.scroll)
 	start := max(0, end-bodyHeight)
-	body := timeline[start:end]
+	body := append([]string(nil), timeline[start:end]...)
 	for len(body) < bodyHeight {
 		body = append(body, "")
 	}
-	footer := []string{}
-	footer = append(footer, questionRows...)
+	footer := append([]string(nil), qrows...)
 	if m.answerMode {
-		footer = append(footer, "Freeform answer: "+m.answer.View())
+		footer = append(footer, wrapRows([]string{"Freeform answer: " + m.answer.View()}, width)...)
 	}
-	footer = append(footer, "", m.composer.View(), "Enter sends · Alt+Enter newline · Ctrl+P commands")
-	return strings.Join(body, "\n") + "\n" + strings.Join(footer, "\n") + "\n↑/↓ scroll · PgUp/PgDown page · new activity appears in header"
+	footer = append(footer, "")
+	footer = append(footer, wrapRows(strings.Split(m.composer.View(), "\n"), width)...)
+	footer = append(footer, wrapRows([]string{"Enter sends · Alt+Enter newline · Ctrl+P commands"}, width)...)
+	if height >= 14 {
+		footer = append(footer, wrapRows([]string{"↑/↓ scroll · PgUp/PgDown page · new activity appears in header"}, width)...)
+	}
+	lines := append(body, footer...)
+	return strings.Join(lines, "\n")
 }
 
 func (m model) tabView() string {
@@ -776,33 +922,45 @@ func (m model) tabView() string {
 			rows = append(rows, "No agents have reported yet.")
 		}
 	case reportTab:
-		rows = append(rows, "Review reports · ←/→ history · Enter opens report")
-		if len(m.state.Reports) == 0 {
-			rows = append(rows, "No report has been generated yet.")
-		} else {
-			i := max(0, min(m.reportIndex, len(m.state.Reports)-1))
-			r := m.state.Reports[i]
-			stamp := ""
-			if !r.CreatedAt.IsZero() {
-				stamp = r.CreatedAt.Format("2006-01-02 15:04")
-			}
-			flag := "current"
-			if r.Stale {
-				flag = "stale"
-			}
-			rows = append(rows, fmt.Sprintf("Report %d/%d · %s · %s", i+1, len(m.state.Reports), stamp, flag), "head "+short(r.HeadSHA)+" · base "+short(r.BaseSHA), "", r.Text)
-			if r.Path != "" {
-				rows = append(rows, "", "File: "+r.Path)
-			}
-		}
+		rows, _ = m.reportRows()
 	case activityTab:
 		rows, _ = m.activityRows()
 	}
-	visible := max(1, m.height-5)
+	rows = wrapRows(rows, effectiveWidth(m.width))
+	visible := max(0, m.height-5-m.overlayRows())
 	end := max(0, len(rows)-m.scroll)
 	start := max(0, end-visible)
 	return strings.Join(rows[start:end], "\n") + "\n\n↑/↓ scroll · PgUp/PgDown page · Ctrl+P commands · q quit"
 }
+func (m model) reportRows() ([]string, []int) {
+	rows := []string{"Review reports · ←/→ history · Enter or click opens report"}
+	mapping := []int{-1}
+	if len(m.state.Reports) == 0 {
+		rows = append(rows, "No report has been generated yet.")
+		mapping = append(mapping, -1)
+		return rows, mapping
+	}
+	i := max(0, min(m.reportIndex, len(m.state.Reports)-1))
+	r := m.state.Reports[i]
+	stamp := ""
+	if !r.CreatedAt.IsZero() {
+		stamp = r.CreatedAt.Format("2006-01-02 15:04")
+	}
+	flag := "current"
+	if r.Stale {
+		flag = "stale"
+	}
+	extra := []string{fmt.Sprintf("Report %d/%d · %s · %s", i+1, len(m.state.Reports), stamp, flag), "head " + short(r.HeadSHA) + " · base " + short(r.BaseSHA), "", r.Text}
+	if r.Path != "" {
+		extra = append(extra, "", "File: "+r.Path)
+	}
+	for _, line := range extra {
+		rows = append(rows, line)
+		mapping = append(mapping, i)
+	}
+	return rows, mapping
+}
+
 func (m model) activityRows() ([]string, []int) {
 	rows := []string{"Activity · / search · s cycle sources · Enter or click for details"}
 	mapping := []int{-1}
@@ -920,7 +1078,9 @@ func tabLabels(width int) []string {
 	narrow := width < 82
 	abbreviations := []string{"C", "D", "K", "A", "R", "T"}
 	for i, name := range tabNames {
-		if narrow {
+		if width < 36 {
+			labels[i] = fmt.Sprintf("%d%s", i+1, abbreviations[i])
+		} else if narrow {
 			labels[i] = fmt.Sprintf(" %d%s ", i+1, abbreviations[i])
 		} else {
 			labels[i] = fmt.Sprintf(" %d %s ", i+1, name)
@@ -929,6 +1089,9 @@ func tabLabels(width int) []string {
 	return labels
 }
 func quitLine(width int) string {
+	if width < 36 {
+		return "y keep d rm n stay"
+	}
 	if width < 82 {
 		return "Quit? [y]keep [d]remove [n]watch"
 	}

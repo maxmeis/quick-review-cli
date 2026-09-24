@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"quick-review-cli/internal/codex"
@@ -54,6 +55,7 @@ type Controller struct {
 	workspace                         Workspace
 	updates                           chan domain.State
 	jobs                              chan any
+	workers                           sync.WaitGroup
 	preparing, polling, reviewTurn    bool
 	activeTurn, reviewBase, finalText string
 	pending                           []string
@@ -132,9 +134,11 @@ func (c *Controller) failure(err error) {
 }
 func (c *Controller) Run(ctx context.Context, actions <-chan domain.Action) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	defer close(c.updates)
 	defer func() {
+		cancel()
+		c.workers.Wait()
+		c.closeQueuedClients()
 		if c.client != nil {
 			c.interruptAll()
 			c.client.Close()
@@ -218,8 +222,22 @@ func (c *Controller) Run(ctx context.Context, actions <-chan domain.Action) erro
 		}
 	}
 }
+
+func (c *Controller) closeQueuedClients() {
+	for {
+		select {
+		case result := <-c.jobs:
+			if p, ok := result.(prepared); ok && p.client != nil {
+				p.client.Close()
+			}
+		default:
+			return
+		}
+	}
+}
+
 func (c *Controller) start(ctx context.Context, url string) {
-	if c.preparing || c.activeTurn != "" {
+	if c.preparing || c.polling || c.activeTurn != "" {
 		c.failure(fmt.Errorf("A review is already active"))
 		return
 	}
@@ -239,7 +257,9 @@ func (c *Controller) start(ctx context.Context, url string) {
 	c.publish()
 	existingStore := c.store
 	existingThread := c.state.ThreadID
+	c.workers.Add(1)
 	go func() {
+		defer c.workers.Done()
 		p := prepared{store: existingStore}
 		defer func() {
 			select {
@@ -311,8 +331,15 @@ func (c *Controller) onPrepared(ctx context.Context, p prepared) {
 		c.client = p.client
 		c.state.ThreadID = p.thread
 	}
-	// The poller may have observed a newer revision while the checkout was fetched.
+	// A restart may have discovered a different revision while the old report was
+	// saved, so retained reports must reflect the new snapshot as stale.
 	latest := c.state.Snapshot
+	if latest.HeadSHA != "" && !sameRevision(latest, p.snapshot) {
+		for i := range c.state.Reports {
+			c.state.Reports[i].Stale = true
+		}
+	}
+	// The poller may have observed a newer revision while the checkout was fetched.
 	if latest.HeadSHA != "" && p.client == nil && !sameRevision(latest, p.snapshot) {
 		c.refreshPending = true
 		c.prepareLatest(ctx)
@@ -375,7 +402,9 @@ func (c *Controller) prepareLatest(ctx context.Context) {
 	c.state.Error = ""
 	s := c.state.Snapshot
 	store := c.store
+	c.workers.Add(1)
 	go func() {
+		defer c.workers.Done()
 		p := prepared{snapshot: s, store: store, ws: c.makeWorkspace(checkoutPath(store.Dir(), s))}
 		jobCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
@@ -390,7 +419,9 @@ func (c *Controller) poll(ctx context.Context) {
 	c.polling = true
 	pr := c.state.Snapshot.PR
 	c.nextPoll = time.Now().Add(c.cfg.PollInterval)
+	c.workers.Add(1)
 	go func() {
+		defer c.workers.Done()
 		jobCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		s, err := c.gh.Snapshot(jobCtx, pr)
@@ -411,8 +442,16 @@ func (c *Controller) onPoll(ctx context.Context, p polled) {
 		return
 	}
 	c.pollFailures = 0
-	c.state.Connection = "Connected"
-	c.state.Error = ""
+	if c.client == nil {
+		if c.state.Connection == "Codex disconnected" {
+			c.state.Connection = "Codex disconnected · GitHub connected"
+		} else {
+			c.state.Connection = "GitHub connected · Codex unavailable"
+		}
+	} else {
+		c.state.Connection = "Connected"
+		c.state.Error = ""
+	}
 	before := c.state.Snapshot
 	changes := session.Changes(before, p.snapshot)
 	c.state.Snapshot = p.snapshot
@@ -458,7 +497,7 @@ func short(s string) string {
 	return s
 }
 func (c *Controller) drain(ctx context.Context) {
-	if c.state.Paused || c.state.ClosedPrompt || c.state.QuitRequested {
+	if c.activeTurn != "" || c.preparing || c.state.Paused || c.state.ClosedPrompt || c.state.QuitRequested {
 		return
 	}
 	if c.refreshPending {

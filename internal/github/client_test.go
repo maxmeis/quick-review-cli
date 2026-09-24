@@ -31,7 +31,7 @@ func TestCheckAuth(t *testing.T) {
 	}
 	t.Run("success", func(t *testing.T) {
 		r := &stubRunner{fn: func(_ context.Context, name string, args ...string) ([]byte, error) {
-			if name != "gh" || !reflect.DeepEqual(args, []string{"auth", "status"}) {
+			if name != "gh" || !reflect.DeepEqual(args, []string{"auth", "status", "--hostname", "github.com"}) {
 				t.Fatalf("unexpected call: %s %v", name, args)
 			}
 			return []byte("logged in"), nil

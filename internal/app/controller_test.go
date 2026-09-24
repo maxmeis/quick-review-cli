@@ -66,26 +66,36 @@ func (f *fakeWorkspace) Prepare(_ context.Context, _ domain.PR, s domain.Snapsho
 func (f *fakeWorkspace) Path() string { return f.path }
 
 type fakeAgent struct {
-	events        chan codex.Message
-	turnIDs       []string
-	turnTexts     []string
-	turnErr       error
-	steerErr      error
-	steered       []string
-	interrupted   []string
-	replies       []any
-	rejections    []string
-	closed        bool
-	closedCh      chan struct{}
-	initializeErr error
-	threadErr     error
-	threadID      string
+	events            chan codex.Message
+	turnIDs           []string
+	turnTexts         []string
+	turnErr           error
+	steerErr          error
+	steered           []string
+	interrupted       []string
+	replies           []any
+	rejections        []string
+	closed            bool
+	closedCh          chan struct{}
+	initializeErr     error
+	initializeStarted chan struct{}
+	initializeRelease <-chan struct{}
+	threadErr         error
+	threadID          string
 }
 
 func newFakeAgent() *fakeAgent {
 	return &fakeAgent{events: make(chan codex.Message, 16), threadID: "thread", closedCh: make(chan struct{})}
 }
-func (f *fakeAgent) Initialize(context.Context) error { return f.initializeErr }
+func (f *fakeAgent) Initialize(context.Context) error {
+	if f.initializeStarted != nil {
+		close(f.initializeStarted)
+	}
+	if f.initializeRelease != nil {
+		<-f.initializeRelease
+	}
+	return f.initializeErr
+}
 func (f *fakeAgent) Thread(context.Context, string, string, string) (string, error) {
 	if f.threadErr != nil {
 		return "", f.threadErr
@@ -215,6 +225,19 @@ func TestControllerCIChangesRetryAndClosure(t *testing.T) {
 	if !c.state.ClosedPrompt || c.pollFailures != 0 || c.state.Connection != "Connected" {
 		t.Fatalf("closure was not reflected: %+v", c.state)
 	}
+	c.client = nil
+	c.state.Connection = "Codex disconnected"
+	c.state.Error = "Codex disconnected. Use /resume to reconnect."
+	c.onPoll(context.Background(), polled{snapshot: closed})
+	if c.state.Connection != "Codex disconnected · GitHub connected" || c.state.Error == "" {
+		t.Fatalf("GitHub poll masked Codex disconnect: connection=%q error=%q", c.state.Connection, c.state.Error)
+	}
+	c.state.Connection = "Not connected"
+	c.state.Error = "Codex startup failed"
+	c.onPoll(context.Background(), polled{snapshot: closed})
+	if c.state.Connection != "GitHub connected · Codex unavailable" || c.state.Error != "Codex startup failed" {
+		t.Fatalf("GitHub poll masked Codex startup failure: connection=%q error=%q", c.state.Connection, c.state.Error)
+	}
 }
 
 func TestControllerStartRunsAsyncSetup(t *testing.T) {
@@ -245,6 +268,17 @@ func TestControllerStartRunsAsyncSetup(t *testing.T) {
 	c.onPrepared(context.Background(), p)
 	if c.preparing || c.state.Phase != "Reviewing" || c.state.ReviewedHead != oldHead || c.workspace != workspace || len(agent.turnTexts) != 1 {
 		t.Fatalf("setup did not transition to review: preparing=%v phase=%s head=%s turns=%d", c.preparing, c.state.Phase, c.state.ReviewedHead, len(agent.turnTexts))
+	}
+}
+
+func TestControllerStartRejectsWhilePolling(t *testing.T) {
+	c := New(Config{})
+	c.polling = true
+	gh := &fakeGitHub{snapshot: testSnapshot(oldHead)}
+	c.gh = gh
+	c.start(context.Background(), "https://github.com/acme/app/pull/4")
+	if gh.calls != 0 || c.preparing || !strings.Contains(c.state.Error, "already active") {
+		t.Fatalf("start raced an active poll: calls=%d preparing=%v error=%q", gh.calls, c.preparing, c.state.Error)
 	}
 }
 
@@ -328,6 +362,52 @@ func TestControllerStartClosesPreparedClientWhenCanceled(t *testing.T) {
 	}
 }
 
+func TestControllerRunClosesPreparedClientDuringTeardown(t *testing.T) {
+	c := New(Config{Root: filepath.Join(t.TempDir(), "sessions"), URL: "https://github.com/acme/app/pull/4"})
+	c.gh = &fakeGitHub{snapshot: testSnapshot(oldHead)}
+	c.makeWorkspace = func(path string) Workspace { return &fakeWorkspace{path: path} }
+	agent := newFakeAgent()
+	agent.initializeStarted = make(chan struct{})
+	releaseInitialize := make(chan struct{})
+	agent.initializeRelease = releaseInitialize
+	c.startClient = func(context.Context) (AgentClient, error) { return agent, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx, nil) }()
+	<-c.Updates()
+	select {
+	case <-agent.initializeStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("setup did not reach agent initialization")
+	}
+	cancel() // Run exits its event loop, then waits for this in-flight setup worker.
+	time.Sleep(20 * time.Millisecond)
+	close(releaseInitialize)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not finish after its setup worker completed")
+	}
+	if !agent.closed {
+		t.Fatal("prepared Codex client was leaked during Run teardown")
+	}
+}
+
+func TestControllerCloseQueuedClientsClosesUnconsumedPreparedClient(t *testing.T) {
+	c := New(Config{})
+	agent := newFakeAgent()
+	c.jobs <- polled{snapshot: testSnapshot(oldHead)}
+	c.jobs <- prepared{client: agent}
+	c.closeQueuedClients()
+	if !agent.closed || len(c.jobs) != 0 {
+		t.Fatalf("queued setup client was not closed and drained: closed=%v queued=%d", agent.closed, len(c.jobs))
+	}
+}
+
 func TestControllerPreparedRevisionRaceAndPause(t *testing.T) {
 	c, agent, created := testController(t)
 	latest := testSnapshot(lastHead)
@@ -348,6 +428,27 @@ func TestControllerPreparedRevisionRaceAndPause(t *testing.T) {
 	c.onPrepared(context.Background(), prepared{snapshot: latest, head: lastHead, base: baseSHA, diff: "latest", ws: &fakeWorkspace{path: "/latest"}, store: c.store})
 	if c.state.Phase != "Paused" || len(agent.turnTexts) != 0 {
 		t.Fatalf("prepared checkout started while paused: phase=%s turns=%d", c.state.Phase, len(agent.turnTexts))
+	}
+}
+
+func TestControllerPreparedNewSnapshotStalesSavedReports(t *testing.T) {
+	c, _, _ := testController(t)
+	c.state.Reports = []domain.Report{
+		{HeadSHA: oldHead, BaseSHA: "merge-base-sha", Text: "saved report"},
+		{HeadSHA: "older", Stale: true},
+	}
+	newSnapshot := testSnapshot(newHead)
+	newSnapshot.BaseSHA = "new-base-tip"
+	agent := newFakeAgent()
+	c.onPrepared(context.Background(), prepared{
+		snapshot: newSnapshot, head: newHead, base: "new-merge-base", diff: "new diff",
+		ws: &fakeWorkspace{path: "/new"}, store: c.store, client: agent, thread: "thread",
+	})
+	if !c.state.Reports[0].Stale || !c.state.Reports[1].Stale {
+		t.Fatalf("saved reports were not retained as stale after resumed revision changed: %+v", c.state.Reports)
+	}
+	if c.state.Snapshot.HeadSHA != newHead || c.state.Snapshot.BaseSHA != "new-base-tip" {
+		t.Fatalf("new snapshot not installed: %+v", c.state.Snapshot)
 	}
 }
 
@@ -396,6 +497,24 @@ func TestControllerSteerFailureQueuesMessage(t *testing.T) {
 	c.drain(context.Background())
 	if len(c.pending) != 0 || len(agent.turnTexts) != 1 || !strings.Contains(agent.turnTexts[0], "please inspect edge case") {
 		t.Fatalf("queued message not submitted after turn: pending=%v turns=%v", c.pending, agent.turnTexts)
+	}
+}
+
+func TestCancelQuitDoesNotStartConcurrentTurns(t *testing.T) {
+	c, agent, _ := testController(t)
+	c.activeTurn = "review-1"
+	c.pending = []string{"queued message"}
+	c.state.QuitRequested = true
+	c.action(context.Background(), domain.Action{Kind: "cancel-quit"})
+	if len(agent.turnTexts) != 0 || len(c.pending) != 1 {
+		t.Fatalf("cancel quit started an overlapping turn or discarded queued input: turns=%v pending=%v", agent.turnTexts, c.pending)
+	}
+	c.activeTurn = ""
+	c.preparing = true
+	c.state.QuitRequested = true
+	c.action(context.Background(), domain.Action{Kind: "cancel-quit"})
+	if len(agent.turnTexts) != 0 || len(c.pending) != 1 {
+		t.Fatalf("cancel quit started a turn during setup: turns=%v pending=%v", agent.turnTexts, c.pending)
 	}
 }
 

@@ -37,7 +37,7 @@ func commandRunner(ctx context.Context, name string, args ...string) ([]byte, er
 }
 
 func (c *Client) CheckAuth(ctx context.Context) error {
-	_, err := c.run(ctx, "gh", "auth", "status")
+	_, err := c.run(ctx, "gh", "auth", "status", "--hostname", "github.com")
 	if err != nil {
 		return fmt.Errorf("gh authentication check failed: %w", err)
 	}

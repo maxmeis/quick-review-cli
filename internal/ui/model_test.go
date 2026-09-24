@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"io"
 	"quick-review-cli/internal/domain"
 	"strings"
@@ -81,8 +82,8 @@ func TestViewTabsAndResize(t *testing.T) {
 		}
 	}
 	m = apply(m, tea.WindowSizeMsg{Width: 24, Height: 8})
-	if got := m.View(); !strings.Contains(got, "QUICK REVIEW") {
-		t.Fatal("narrow render failed")
+	if got := m.View(); !strings.Contains(got, "#42") {
+		t.Fatal("narrow render omitted PR header")
 	}
 }
 func TestTabsAndMouse(t *testing.T) {
@@ -164,9 +165,11 @@ func TestLauncherAndCommands(t *testing.T) {
 		t.Fatal("focused launcher did not accept keystrokes")
 	}
 	m = apply(m, key("enter"))
-	if actions[0].Kind != "start" || m.launcherMode {
+	if actions[0].Kind != "start" || !m.launcherMode || !m.launching {
 		t.Fatal(actions)
 	}
+	state := testState()
+	m = apply(m, stateMsg(state))
 	m = apply(m, key("ctrl+p"))
 	m.command.SetValue("pause")
 	m = apply(m, key("enter"))
@@ -695,7 +698,18 @@ func TestProducerSourceFiltersAndMouseTargets(t *testing.T) {
 	m.active = chatTab
 	m.questionFocus = true
 	m.height = 30
-	m = apply(m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 8, Y: 23})
+	_, _, _, questionMap, bodyHeight := m.chatGeometry(effectiveWidth(m.width), m.height)
+	optionLine := -1
+	for i, option := range questionMap {
+		if option == 0 {
+			optionLine = i
+			break
+		}
+	}
+	if optionLine < 0 {
+		t.Fatal("first option not rendered")
+	}
+	m = apply(m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 8, Y: 3 + bodyHeight + optionLine})
 	if actions[len(actions)-1].Kind != "answer" || actions[len(actions)-1].Text != "Correctness" || actions[len(actions)-1].ID != "q1" {
 		t.Fatalf("question option click: %+v", actions)
 	}
@@ -791,5 +805,69 @@ func TestTerminalControlSequencesAreRemoved(t *testing.T) {
 	}
 	if strings.Contains(hostile.Snapshot.Title, "PAYLOAD") == false {
 		t.Fatal("safe rendering mutated controller snapshot")
+	}
+}
+
+func TestRenderedScreenNeverWrapsOrPushesHeaderOffscreen(t *testing.T) {
+	s := testState()
+	s.Snapshot.Title = strings.Repeat("long pull request title ", 8)
+	s.DraftReply = strings.Repeat("Codex streaming detail ", 12)
+	s.Diff = strings.Repeat("+a very long diff line with source text ", 12)
+	s.Events = append(s.Events, domain.Event{ID: 9, Source: "Codex", Text: strings.Repeat("a long timeline event ", 8), Detail: strings.Repeat("detail ", 20)})
+	for _, width := range []int{100, 36, 24} {
+		m := NewModel(s, nil).(model)
+		m.width = width
+		m.height = 32
+		m.noColor = true
+		for pane := tab(0); pane < tab(len(tabNames)); pane++ {
+			m.active = pane
+			assertFits(t, m.View(), width, 32)
+		}
+		m.quitDialog = true
+		assertFits(t, m.View(), width, 32)
+		m.quitDialog = false
+		m.commandMode = true
+		assertFits(t, m.View(), width, 32)
+	}
+}
+func assertFits(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("render has %d lines at %dx%d", len(lines), width, height)
+	}
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("render line %d has width %d > %d: %q", i, got, width, line)
+		}
+	}
+	if len(lines) < 3 || (!strings.Contains(lines[0], "QUICK REVIEW") && !strings.Contains(lines[0], "#42")) || !strings.Contains(lines[1], "CI ") {
+		t.Fatalf("persistent header is missing: %q", view)
+	}
+}
+
+func TestLauncherKeepsInvalidURLAvailableForRetry(t *testing.T) {
+	actions := []domain.Action{}
+	m := NewModel(domain.State{}, func(a domain.Action) { actions = append(actions, a) }).(model)
+	m.width = 100
+	m.height = 32
+	m = typeText(m, "not a PR URL")
+	m = apply(m, key("enter"))
+	if !m.launcherMode || !m.launching || m.launcher.Value() != "not a PR URL" {
+		t.Fatal("launcher should retain submitted URL while connecting")
+	}
+	s := domain.State{Error: "invalid pull request URL"}
+	m = apply(m, stateMsg(s))
+	if !m.launcherMode || m.launcher.Value() != "not a PR URL" || !strings.Contains(m.View(), "invalid pull request URL") {
+		t.Fatalf("invalid URL should remain editable with error: %q", m.View())
+	}
+	m = apply(m, key("enter"))
+	if len(actions) != 2 || actions[1].Kind != "start" {
+		t.Fatalf("retry did not dispatch start: %+v", actions)
+	}
+	s = testState()
+	m = apply(m, stateMsg(s))
+	if m.launcherMode || m.launching {
+		t.Fatal("accepted PR should enter the review")
 	}
 }
