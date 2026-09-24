@@ -105,3 +105,5 @@ QUICK_REVIEW_LIVE_CODEX=1 go test ./internal/codex -run TestLiveCodexContract
 Run it only with Codex installed and logged in. It checks the local app-server contract and does not use GitHub.
 
 See [Architecture and verification](docs/architecture.md) for the session lifecycle, watcher behavior, storage, and test boundaries.
+
+A real authenticated end-to-end run, failures found, and saved example reports are recorded in [the live battle test](docs/testing/battle-test-2026-09-24.md).
