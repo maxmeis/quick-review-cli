@@ -220,7 +220,15 @@ func (m model) sidebar(w, h int) string {
 	for _, a := range s.Agents {
 		rows = append(rows, tone("● "+a.Name, good, m.noColor), "  "+a.Status)
 	}
-	rows = append(rows, "", tone("SAVED REPORTS", muted, m.noColor), fmt.Sprintf("%d Markdown reports", len(s.Reports)), "", tone(first(s.Connection, "Ready to connect"), muted, m.noColor))
+	reportStatus := "No report generated"
+	if len(s.Reports) > 0 {
+		r := s.Reports[len(s.Reports)-1]
+		reportStatus = "Live report"
+		if !r.CreatedAt.IsZero() {
+			reportStatus += " · " + r.CreatedAt.Format("2006-01-02 15:04")
+		}
+	}
+	rows = append(rows, "", tone("LIVE REPORT", muted, m.noColor), reportStatus, "", tone(first(s.Connection, "Ready to connect"), muted, m.noColor))
 	return panel("Overview", "LIVE", strings.Join(rows, "\n"), w, h, muted, m.noColor)
 }
 func fitScreen(s string, w, h int) string {

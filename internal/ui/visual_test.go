@@ -34,12 +34,12 @@ func TestExportVisualFixtures(t *testing.T) {
 	s.Snapshot.Title = "Refresh authentication tokens before expiry"
 	s.Snapshot.Checks = []domain.Check{{Name: "Unit tests", State: "SUCCESS"}, {Name: "Integration tests", State: "IN_PROGRESS"}, {Name: "Lint", State: "SUCCESS"}}
 	s.Events = []domain.Event{{ID: 1, Time: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Source: "You", Kind: "message", Text: "Review token renewal and concurrent requests."}, {ID: 2, Source: "App", Kind: "checkout", Text: "Checkout ready at 12345678"}, {ID: 3, Source: "Codex", Kind: "message", Text: "I am checking token expiry and callers. Two reviewers are inspecting concurrency and test coverage."}}
-	s.Reports[0].Text = "# Review summary\n\n## P1 — Avoid concurrent token refresh\n\nLocation: auth/token.go:42\nTwo requests can refresh the same expired token. Guard refresh with a shared lock.\n\n## Style and maintainability\nNo actionable suggestions.\n\nTests were not run."
+	s.Reports = []domain.Report{{Path: "/tmp/report.md", HeadSHA: s.Snapshot.HeadSHA, BaseSHA: s.Snapshot.BaseSHA, CreatedAt: time.Date(2026, 9, 24, 9, 55, 0, 0, time.UTC), Text: "# Review summary\n\n## P1 — Avoid concurrent token refresh\n\nLocation: auth/token.go:42\nTwo requests can refresh the same expired token. Guard refresh with a shared lock.\n\n```mermaid\ngraph LR\n  Push --> Review --> Report\n```\n\n## Style and maintainability\nNo actionable suggestions.\n\nTests were not run."}}
 	captures := map[string]string{}
 	for i, name := range tabNames {
 		m := NewModel(s, nil).(model)
 		m = apply(m, tea.WindowSizeMsg{Width: 120, Height: 34})
-		m.active = tab(i)
+		m.setTab(tab(i))
 		captures[name] = m.View()
 	}
 	for _, name := range []string{"Launcher", "Question", "Quit", "Narrow", "Compact", "Disconnected"} {

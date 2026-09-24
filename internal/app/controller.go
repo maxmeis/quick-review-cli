@@ -155,6 +155,12 @@ func (c *Controller) Run(ctx context.Context, actions <-chan domain.Action) erro
 		}
 		c.store = st
 		c.state = saved
+		// Older sessions persisted a history of reports. Keep the most recent
+		// entry as the single current report; leave the old files untouched.
+		c.state.Reports, err = canonicalizeLatestReport(st, c.state.Reports)
+		if err != nil {
+			c.event("App", "error", "Could not migrate saved report", err.Error(), "")
+		}
 		c.pending = append([]string(nil), saved.PendingMessages...)
 		c.watchContext = saved.WatcherContext
 		c.refreshPending = saved.RefreshPending
@@ -234,6 +240,36 @@ func (c *Controller) closeQueuedClients() {
 			return
 		}
 	}
+}
+
+func latestReport(reports []domain.Report) []domain.Report {
+	if len(reports) == 0 {
+		return nil
+	}
+	if len(reports) < 2 {
+		return reports
+	}
+	return reports[len(reports)-1:]
+}
+
+func canonicalizeLatestReport(store *session.Store, reports []domain.Report) ([]domain.Report, error) {
+	reports = latestReport(reports)
+	if len(reports) == 0 {
+		return reports, nil
+	}
+	report := reports[0]
+	canonical := filepath.Join(store.Dir(), "reports", "report.md")
+	if report.Path == canonical || report.Text == "" {
+		return reports, nil
+	}
+	migrated, err := store.SaveReport(report.HeadSHA, report.BaseSHA, report.Text)
+	if err != nil {
+		return reports, err
+	}
+	migrated.CreatedAt = report.CreatedAt
+	migrated.Stale = report.Stale
+	migrated.InProgress = report.InProgress
+	return []domain.Report{migrated}, nil
 }
 
 func (c *Controller) start(ctx context.Context, url string) {
@@ -318,6 +354,7 @@ func checkoutPath(dir string, s domain.Snapshot) string {
 }
 func (c *Controller) onPrepared(ctx context.Context, p prepared) {
 	c.preparing = false
+	c.state.Reports = latestReport(c.state.Reports)
 	if p.store != nil {
 		c.store = p.store
 		c.state.SessionDir = p.store.Dir()

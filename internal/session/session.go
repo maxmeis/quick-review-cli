@@ -5,8 +5,6 @@ package session
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -230,7 +228,6 @@ type filesystemOps struct {
 	createTemp func(string, string) (writableFile, error)
 	rename     func(string, string) error
 	remove     func(string) error
-	randomRead func([]byte) (int, error)
 }
 
 var sessionFS = filesystemOps{
@@ -244,9 +241,8 @@ var sessionFS = filesystemOps{
 	createTemp: func(dir, pattern string) (writableFile, error) {
 		return os.CreateTemp(dir, pattern)
 	},
-	rename:     os.Rename,
-	remove:     os.Remove,
-	randomRead: rand.Read,
+	rename: os.Rename,
+	remove: os.Remove,
 }
 
 // NewStore creates a uniquely named session directory below root.
@@ -317,8 +313,7 @@ func (s *Store) LoadState() (domain.State, error) {
 	return state, nil
 }
 
-// SaveReport writes a report under a unique filename containing the exact head
-// and base SHAs, and returns the corresponding domain report value.
+// SaveReport atomically replaces the session's canonical Markdown report.
 func (s *Store) SaveReport(head, base, text string) (domain.Report, error) {
 	var report domain.Report
 	if !shaPattern.MatchString(head) || !shaPattern.MatchString(base) {
@@ -328,7 +323,8 @@ func (s *Store) SaveReport(head, base, text string) (domain.Report, error) {
 	if err := sessionFS.mkdirAll(reportsDir, 0o700); err != nil {
 		return report, fmt.Errorf("create reports directory: %w", err)
 	}
-	f, err := sessionFS.createTemp(reportsDir, ".review-*.tmp")
+	path := filepath.Join(reportsDir, "report.md")
+	f, err := sessionFS.createTemp(reportsDir, ".report-*.tmp")
 	if err != nil {
 		return report, fmt.Errorf("create temporary report: %w", err)
 	}
@@ -353,32 +349,11 @@ func (s *Store) SaveReport(head, base, text string) (domain.Report, error) {
 	if err := f.Close(); err != nil {
 		return report, fmt.Errorf("close temporary report: %w", err)
 	}
-	for attempt := 0; attempt < 5; attempt++ {
-		randomID := make([]byte, 4)
-		if _, err := sessionFS.randomRead(randomID); err != nil {
-			return report, fmt.Errorf("generate report filename: %w", err)
-		}
-		name := fmt.Sprintf("review-%s-%s-%s.md", strings.ToLower(head[:min(12, len(head))]), strings.ToLower(base[:min(12, len(base))]), hex.EncodeToString(randomID))
-		path := filepath.Join(reportsDir, name)
-		f, err := sessionFS.openFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return report, fmt.Errorf("create report: %w", err)
-		}
-		if closeErr := f.Close(); closeErr != nil {
-			_ = sessionFS.remove(path)
-			return report, fmt.Errorf("close report reservation: %w", closeErr)
-		}
-		if err := sessionFS.rename(tmpPath, path); err != nil {
-			_ = sessionFS.remove(path)
-			return report, fmt.Errorf("publish report: %w", err)
-		}
-		report = domain.Report{Path: path, HeadSHA: head, BaseSHA: base, Text: text, CreatedAt: time.Now().UTC()}
-		return report, nil
+	if err := sessionFS.rename(tmpPath, path); err != nil {
+		return report, fmt.Errorf("publish report: %w", err)
 	}
-	return report, errors.New("could not allocate a unique report filename")
+	report = domain.Report{Path: path, HeadSHA: head, BaseSHA: base, Text: text, CreatedAt: time.Now().UTC()}
+	return report, nil
 }
 
 // Events reads all events from the JSONL event log. A missing log is empty.

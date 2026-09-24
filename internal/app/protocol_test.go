@@ -243,12 +243,30 @@ func TestQuestionReplyCanBeRetriedWithoutLosingAnswers(t *testing.T) {
 func TestReportPreservesFindingsAcrossWatcherAcknowledgements(t *testing.T) {
 	c, _ := protocolController(t)
 	c.reviewTurn = true
+	if c.saveReviewReport(true) {
+		t.Fatal("saved an empty report")
+	}
+	path := ""
 	for _, text := range []string{"## Findings\nP1: progress.go:8 truncates Percent(1,2) to zero.", "CI on the newer head is now passing."} {
 		c.onItem(wireParams{Item: wireItem{Type: "agentMessage", Phase: "final_answer", Text: text}}, true, false)
+		if len(c.state.Reports) != 1 {
+			t.Fatal("final answer was not written live")
+		}
+		if !c.state.Reports[0].InProgress || !strings.Contains(c.state.Reports[0].Text, "Review in progress") {
+			t.Fatal("live report was not marked as incomplete")
+		}
+		if path == "" {
+			path = c.state.Reports[0].Path
+		} else if c.state.Reports[0].Path != path {
+			t.Fatalf("report path changed: %s != %s", c.state.Reports[0].Path, path)
+		}
 	}
 	c.onProtocol(context.Background(), codex.Message{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)})
 	if len(c.state.Reports) != 1 {
 		t.Fatal("missing report")
+	}
+	if c.state.Reports[0].InProgress {
+		t.Fatal("completed report remains marked in progress")
 	}
 	report := c.state.Reports[0].Text
 	if !strings.Contains(report, "P1: progress.go:8") || !strings.Contains(report, "CI on the newer head") {

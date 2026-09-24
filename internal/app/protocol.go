@@ -107,13 +107,8 @@ func (c *Controller) onProtocol(ctx context.Context, m codex.Message) {
 		c.requests = map[string]*request{}
 		if p.Turn.Status == "completed" {
 			if c.reviewTurn && c.finalText != "" && c.store != nil {
-				text := fmt.Sprintf("# Review: %s #%d\n\nHead: `%s`  \nMerge-base: `%s`\n\n%s\n", c.state.Snapshot.PR.Owner+"/"+c.state.Snapshot.PR.Repo, c.state.Snapshot.PR.Number, c.state.ReviewedHead, c.reviewBase, c.finalText)
-				r, err := c.store.SaveReport(c.state.ReviewedHead, c.reviewBase, text)
-				if err != nil {
-					c.failure(err)
-				} else {
-					r.Stale = c.refreshPending
-					c.state.Reports = append(c.state.Reports, r)
+				if c.saveReviewReport(false) {
+					r := c.state.Reports[0]
 					c.event("App", "report", "Markdown report saved", r.Path, r.HeadSHA)
 					go c.notify(c.state.Snapshot.PR, "✓ Review complete", short(r.HeadSHA))
 				}
@@ -138,6 +133,26 @@ func (c *Controller) onProtocol(ctx context.Context, m codex.Message) {
 		}
 	}
 }
+func (c *Controller) saveReviewReport(inProgress bool) bool {
+	if c.store == nil || c.finalText == "" {
+		return false
+	}
+	text := fmt.Sprintf("# Review: %s #%d\n\nHead: `%s`  \nMerge-base: `%s`\n\n", c.state.Snapshot.PR.Owner+"/"+c.state.Snapshot.PR.Repo, c.state.Snapshot.PR.Number, c.state.ReviewedHead, c.reviewBase)
+	if inProgress {
+		text += "*Review in progress; this report may be incomplete.*\n\n"
+	}
+	text += c.finalText + "\n"
+	r, err := c.store.SaveReport(c.state.ReviewedHead, c.reviewBase, text)
+	if err != nil {
+		c.failure(err)
+		return false
+	}
+	r.Stale = c.refreshPending
+	r.InProgress = inProgress
+	c.state.Reports = []domain.Report{r}
+	return true
+}
+
 func (c *Controller) onItem(p wireParams, complete, child bool) {
 	it := p.Item
 	switch it.Type {
@@ -154,6 +169,9 @@ func (c *Controller) onItem(p wireParams, complete, child bool) {
 					// Steered watcher updates can produce several final messages in one turn.
 					// Preserve the complete review before any follow-up acknowledgements.
 					c.finalText = strings.TrimSpace(c.finalText + "\n\n" + it.Text)
+					if c.reviewTurn && c.store != nil && c.finalText != "" {
+						c.saveReviewReport(true)
+					}
 				}
 			}
 		}

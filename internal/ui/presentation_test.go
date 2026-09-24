@@ -73,7 +73,7 @@ func TestDecorationCategoriesAndAdaptiveActiveHeading(t *testing.T) {
 	for _, row := range []string{
 		"Changed files · Enter advances",
 		"Review agents",
-		"Review reports  history",
+		"Live review report",
 		"Activity · search",
 		"Style and maintainability",
 		"Questions · pending",

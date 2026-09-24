@@ -17,7 +17,8 @@ func testState() domain.State {
 		ReviewedHead: "abcdef0123456789", Connection: "watching", Diff: "@@ -1 +1 @@\n-old\n+new",
 		Events:    []domain.Event{{ID: 1, Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Source: "Codex", Kind: "review", Text: "Found a bug", Detail: "line 4", SHA: "1234567890"}, {ID: 2, Source: "GitHub", Kind: "check", Text: "checks passed"}},
 		Agents:    []domain.Agent{{ID: "a1", Name: "Scout", Scope: "main.go", Status: "done", Detail: "No risks"}},
-		Reports:   []domain.Report{{Path: "/tmp/report.md", HeadSHA: "12345678", BaseSHA: "87654321", Text: "Looks good", Stale: true}, {Path: "/tmp/report2.md", HeadSHA: "12345678", Text: "Current report", CreatedAt: time.Now()}},
+		Phase:     "Reviewing",
+		Reports:   []domain.Report{{Path: "/tmp/report.md", HeadSHA: "12345678", BaseSHA: "87654321", Text: "# Review summary\n\n```mermaid\ngraph TD\n A --> B\n```", CreatedAt: time.Now()}},
 		Questions: []domain.Question{{ID: "q1", Title: "Review focus", Prompt: "What should I prioritize?", Options: []string{"Correctness", "Performance"}}},
 	}
 }
@@ -267,6 +268,59 @@ func TestChecksReportsQuitAndContext(t *testing.T) {
 		t.Fatal(m.active)
 	}
 }
+
+func TestReportRowsUseLatestLegacyEntryAndShowStaleState(t *testing.T) {
+	s := testState()
+	s.Reports = []domain.Report{
+		{Path: "/tmp/old.md", Text: "old report"},
+		{Text: "latest report", Stale: true},
+	}
+	s.Phase = "Idle"
+	m := NewModel(s, nil).(model)
+	rows, mapping := m.reportRows()
+	joined := strings.Join(rows, "\n")
+	if !strings.Contains(joined, "stale") || !strings.Contains(joined, "latest report") || strings.Contains(joined, "old report") {
+		t.Fatalf("report pane did not show the latest stale report: %q", joined)
+	}
+	if strings.Contains(joined, "review in progress") {
+		t.Fatalf("idle report marked as in progress: %q", joined)
+	}
+	s.Reports[1].InProgress = true
+	m.state = s
+	rows, _ = m.reportRows()
+	if !strings.Contains(strings.Join(rows, "\n"), "review in progress") {
+		t.Fatal("in-progress saved report status missing")
+	}
+	for _, index := range mapping {
+		if index >= 0 && index != 1 {
+			t.Fatalf("legacy report row mapped to index %d", index)
+		}
+	}
+	m.active = reportTab
+	m.scrollByTab = nil
+	m = apply(m, stateMsg(s))
+}
+
+func TestEnteringReportStartsAtTop(t *testing.T) {
+	s := testState()
+	s.Reports = []domain.Report{{Text: "# Report start\n\n" + strings.Repeat("detail line\n", 24)}}
+	m := NewModel(s, nil).(model)
+	m = apply(m, tea.WindowSizeMsg{Width: 120, Height: 34})
+	m = apply(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}, Alt: true})
+	view := m.View()
+	if !strings.Contains(view, "# Report start") {
+		t.Fatalf("report did not open at its first lines: %q", view)
+	}
+	if m.scroll == 0 {
+		t.Fatal("long report did not retain a scroll range from the top")
+	}
+	oldTop := m.reportTop()
+	s.Reports[0].Text += strings.Repeat("new section\n", 6)
+	m = apply(m, stateMsg(s))
+	if got := m.reportTop(); got != oldTop {
+		t.Fatalf("state update moved report reading position from %d to %d", oldTop, got)
+	}
+}
 func TestCiAndEventHelpers(t *testing.T) {
 	for _, tc := range []struct {
 		checks []domain.Check
@@ -462,7 +516,7 @@ func TestInputComponentsAndStateEdgeCases(t *testing.T) {
 	if tabAt(100, 80) != -1 {
 		t.Fatal("tab click outside bounds")
 	}
-	if reportsPath(testState()) != "/tmp/report2.md" {
+	if reportsPath(testState()) != "/tmp/report.md" {
 		t.Fatal("latest report path")
 	}
 }
@@ -522,12 +576,12 @@ func TestMoreKeyboardAndRenderBranches(t *testing.T) {
 	m.state.Reports = testState().Reports
 	m.reportIndex = 0
 	m = apply(m, key("right"))
-	if m.reportIndex != 1 {
-		t.Fatal("right report history")
+	if m.reportIndex != 0 {
+		t.Fatal("right changed live report selection")
 	}
 	m = apply(m, key("left"))
 	if m.reportIndex != 0 {
-		t.Fatal("left report history")
+		t.Fatal("left changed live report selection")
 	}
 	m.active = chatTab
 	m = apply(m, key("f2"))

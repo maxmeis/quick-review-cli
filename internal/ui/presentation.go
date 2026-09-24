@@ -105,7 +105,7 @@ func actorHeading(line string) bool {
 func sectionHeading(line string) bool {
 	for _, heading := range []string{
 		"Changed files", "Checks", "Review agents", "Review reports", "Activity",
-		"Review findings", "Style and maintainability", "Questions", "Suggested checks",
+		"Review findings", "Live review report", "Style and maintainability", "Questions", "Suggested checks",
 	} {
 		if line == heading || strings.HasPrefix(line, heading+" ·") || strings.HasPrefix(line, heading+"  ") {
 			return true

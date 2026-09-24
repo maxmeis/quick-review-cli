@@ -311,7 +311,7 @@ func TestSaveReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.Path == two.Path || !strings.Contains(one.Path, "review-aaaaaaaaaaaa-bbbbbbbbbbbb-") || one.Text != "# report" || one.Stale || one.CreatedAt.IsZero() {
+	if one.Path != two.Path || filepath.Base(one.Path) != "report.md" || one.Text != "# report" || two.Stale || one.CreatedAt.IsZero() {
 		t.Fatalf("unexpected reports: %#v %#v", one, two)
 	}
 	content, err := os.ReadFile(one.Path)
@@ -342,34 +342,13 @@ func TestSaveReportFailurePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	randomErr := errors.New("random unavailable")
 	restore := replaceSessionFS(t, func(ops *filesystemOps) {
-		ops.randomRead = func([]byte) (int, error) { return 0, randomErr }
-	})
-	if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, randomErr) {
-		t.Fatalf("SaveReport random error = %v", err)
-	}
-	restore()
-
-	restore = replaceSessionFS(t, func(ops *filesystemOps) {
-		ops.openFile = func(string, int, os.FileMode) (writableFile, error) { return nil, os.ErrPermission }
+		ops.createTemp = func(string, string) (writableFile, error) { return nil, os.ErrPermission }
 	})
 	if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("SaveReport create error = %v", err)
+		t.Fatalf("SaveReport staging create error = %v", err)
 	}
 	restore()
-	if entries, err := os.ReadDir(filepath.Join(store.Dir(), "reports")); err != nil || len(entries) != 0 {
-		t.Fatalf("temporary report remained after reservation error: %v %v", entries, err)
-	}
-
-	restore = replaceSessionFS(t, func(ops *filesystemOps) {
-		ops.openFile = func(string, int, os.FileMode) (writableFile, error) { return nil, os.ErrExist }
-	})
-	if _, err := store.SaveReport(head, base, "body"); err == nil || !strings.Contains(err.Error(), "unique") {
-		t.Fatalf("SaveReport collision error = %v", err)
-	}
-	restore()
-
 	writeErr := errors.New("disk full")
 	restore = replaceSessionFS(t, func(ops *filesystemOps) {
 		ops.createTemp = func(string, string) (writableFile, error) {
@@ -460,7 +439,7 @@ func TestSaveReportAtomicStagingFailures(t *testing.T) {
 			ops.remove = func(path string) error { removed = append(removed, path); return nil }
 		})
 		defer restore()
-		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, closeErr) || len(removed) != 2 {
+		if _, err := store.SaveReport(head, base, "body"); err != nil || len(removed) != 1 {
 			t.Fatalf("reservation close/cleanup = %v, removed=%v", err, removed)
 		}
 	})
@@ -472,7 +451,7 @@ func TestSaveReportAtomicStagingFailures(t *testing.T) {
 			ops.remove = func(path string) error { removed = append(removed, path); return nil }
 		})
 		defer restore()
-		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, renameErr) || len(removed) != 2 {
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, renameErr) || len(removed) != 1 {
 			t.Fatalf("rename failure/cleanup = %v, removed=%v", err, removed)
 		}
 	})

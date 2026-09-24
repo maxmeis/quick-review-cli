@@ -21,7 +21,7 @@ func demoState() domain.State {
 		},
 		Agents:  []domain.Agent{{ID: "security", Name: "Security", Scope: "Token expiry and concurrent refresh", Status: "running"}, {ID: "regressions", Name: "Regressions", Scope: "Callers and error handling", Status: "running"}},
 		Diff:    "diff --git a/auth/token.go b/auth/token.go\n--- a/auth/token.go\n+++ b/auth/token.go\n@@ -10,3 +10,4 @@\n- if token.Expired() {\n+ if token.ExpiresWithin(refreshWindow) {\n     return refresh(ctx)\n  }",
-		Reports: []domain.Report{{HeadSHA: base, BaseSHA: base, Text: "# Previous review\n\nNo actionable findings.\n\n## Verification limits\nCode inspection only; tests were not run.", Stale: true, CreatedAt: now.Add(-time.Hour)}},
+		Reports: []domain.Report{{HeadSHA: head, BaseSHA: base, Text: "# Review summary\n\n## P1 — Avoid concurrent token refresh\n\nTwo requests can refresh the same expired token. Guard refresh with a shared lock.\n\n```mermaid\ngraph LR\n  Push --> Review --> Report\n```\n\n## Verification limits\nCode inspection only; tests were not run.", CreatedAt: now}},
 	}
 }
 func runDemo(ctx context.Context, updates chan domain.State, actions <-chan domain.Action) error {

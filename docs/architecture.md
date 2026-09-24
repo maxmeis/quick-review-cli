@@ -13,7 +13,7 @@ The controller owns mutable session state in one event loop. Network and checkou
 
 ## New revisions and watcher messages
 
-A push or base update marks existing reports stale and queues a review of the latest observed revision. Existing reviewers retain their checkout until their turn ends. Intermediate pushes are coalesced. The next turn gets a fresh checkout and explicit commit identifiers.
+A push or base update marks the live report stale and queues a review of the latest observed revision. Existing reviewers retain their checkout until their turn ends. Intermediate pushes are coalesced. The next turn gets a fresh checkout and explicit commit identifiers.
 
 CI and PR-state transitions appear in Chat and Activity. During an active turn, the controller submits observed facts through `turn/steer`; if submission fails, it retains them for a later turn. User messages follow the same queue fallback. Queued messages and watcher context are saved for resume.
 
@@ -27,7 +27,7 @@ Subagents belong to the Codex thread. The Agents tab reflects the collaboration 
 
 ## Stored artifacts
 
-Each session directory contains a JSON state snapshot, JSONL activity history, revision checkouts, and uniquely named Markdown reports. Reports publish through a synced temporary file and rename. Private session files use restrictive permissions. Resuming restores the thread and queues, then refreshes GitHub state before reviewing.
+Each session directory contains a JSON state snapshot, JSONL activity history, revision checkouts, and one canonical Markdown report at `reports/report.md`. Report updates publish through a synced temporary file and rename. Private session files use restrictive permissions. Resuming restores the thread and queues, then refreshes GitHub state before reviewing.
 
 ## Test boundaries
 

@@ -444,11 +444,98 @@ func TestControllerPreparedNewSnapshotStalesSavedReports(t *testing.T) {
 		snapshot: newSnapshot, head: newHead, base: "new-merge-base", diff: "new diff",
 		ws: &fakeWorkspace{path: "/new"}, store: c.store, client: agent, thread: "thread",
 	})
-	if !c.state.Reports[0].Stale || !c.state.Reports[1].Stale {
+	if len(c.state.Reports) != 1 || !c.state.Reports[0].Stale {
 		t.Fatalf("saved reports were not retained as stale after resumed revision changed: %+v", c.state.Reports)
 	}
 	if c.state.Snapshot.HeadSHA != newHead || c.state.Snapshot.BaseSHA != "new-base-tip" {
 		t.Fatalf("new snapshot not installed: %+v", c.state.Snapshot)
+	}
+}
+
+func TestLatestReportNormalizesLegacyHistory(t *testing.T) {
+	older := domain.Report{Path: "older", CreatedAt: time.Unix(1, 0)}
+	newer := domain.Report{Path: "z-newer", CreatedAt: time.Unix(2, 0)}
+	if got := latestReport(nil); got != nil {
+		t.Fatalf("empty reports = %#v", got)
+	}
+	if got := latestReport([]domain.Report{older}); len(got) != 1 || got[0] != older {
+		t.Fatalf("single report = %#v", got)
+	}
+	if got := latestReport([]domain.Report{older, newer}); len(got) != 1 || got[0] != newer {
+		t.Fatalf("legacy history = %#v", got)
+	}
+	newer.CreatedAt = older.CreatedAt
+	if got := latestReport([]domain.Report{newer, older}); got[0] != older {
+		t.Fatalf("latest appended report not retained = %#v", got)
+	}
+}
+
+func TestCanonicalizeLatestReport(t *testing.T) {
+	store, err := session.OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	created := time.Unix(42, 0)
+	oldPath := filepath.Join(store.Dir(), "reports", "review-old.md")
+	unknownPath := filepath.Join(store.Dir(), "reports", "unrecognized.md")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unknownPath, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := canonicalizeLatestReport(store, []domain.Report{{Path: oldPath, HeadSHA: head, BaseSHA: base, Text: "latest", CreatedAt: created, Stale: true, InProgress: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].Path != filepath.Join(store.Dir(), "reports", "report.md") || reports[0].CreatedAt != created || !reports[0].Stale || !reports[0].InProgress {
+		t.Fatalf("migrated report metadata = %#v", reports)
+	}
+	if content, err := os.ReadFile(reports[0].Path); err != nil || string(content) != "latest" {
+		t.Fatalf("canonical contents = %q, %v", content, err)
+	}
+	if content, err := os.ReadFile(unknownPath); err != nil || string(content) != "keep me" {
+		t.Fatalf("unknown legacy file changed: %q, %v", content, err)
+	}
+	if got, err := canonicalizeLatestReport(store, reports); err != nil || got[0].Path != reports[0].Path {
+		t.Fatalf("canonical report changed: %#v, %v", got, err)
+	}
+	empty := domain.Report{Path: oldPath}
+	if got, err := canonicalizeLatestReport(store, []domain.Report{empty}); err != nil || got[0] != empty {
+		t.Fatalf("empty legacy report = %#v, %v", got, err)
+	}
+	bad := domain.Report{Path: oldPath, HeadSHA: "bad", BaseSHA: base, Text: "text"}
+	if got, err := canonicalizeLatestReport(store, []domain.Report{bad}); err == nil || got[0] != bad {
+		t.Fatalf("invalid legacy report = %#v, %v", got, err)
+	}
+}
+
+func TestResumeRecordsLegacyReportMigrationFailure(t *testing.T) {
+	store, err := session.OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveState(domain.State{Snapshot: domain.Snapshot{PR: domain.PR{Owner: "o", Repo: "r", Number: 1}}, Reports: []domain.Report{{HeadSHA: "bad", BaseSHA: strings.Repeat("b", 40), Text: "legacy"}}}); err != nil {
+		t.Fatal(err)
+	}
+	c := New(Config{ResumeDir: store.Dir()})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.state.Reports) != 1 || c.state.Reports[0].Text != "legacy" {
+		t.Fatalf("migration failure discarded saved report: %#v", c.state.Reports)
+	}
+	foundError := false
+	for _, event := range c.state.Events {
+		if event.Text == "Could not migrate saved report" {
+			foundError = true
+		}
+	}
+	if !foundError {
+		t.Fatal("migration failure was not recorded in activity")
 	}
 }
 

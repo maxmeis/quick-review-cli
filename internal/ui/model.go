@@ -199,7 +199,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case stateMsg:
 		oldN := len(m.state.Events)
+		preserveReportPosition := m.active == reportTab
+		reportStart := m.reportTop()
 		m.state = safeState(domain.State(v))
+		if preserveReportPosition {
+			m.setReportTop(reportStart)
+		}
 		if m.questionIndex == -1 && len(m.state.Questions) > 0 {
 			m.questionIndex = 0
 		}
@@ -472,18 +477,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "left", "h":
-			if m.active == reportTab && m.reportIndex > 0 {
-				m.reportIndex--
-			} else if m.active == activityTab && m.selectedEvent > 0 {
+			if m.active == activityTab && m.selectedEvent > 0 {
 				m.selectedEvent--
 			} else if m.active == chatTab {
 				break
 			}
 			return m, nil
 		case "right", "l":
-			if m.active == reportTab && m.reportIndex < len(m.state.Reports)-1 {
-				m.reportIndex++
-			} else if m.active == activityTab && m.selectedEvent < len(m.state.Events)-1 {
+			if m.active == activityTab && m.selectedEvent < len(m.state.Events)-1 {
 				m.selectedEvent++
 			} else if m.active == chatTab {
 				break
@@ -969,14 +970,16 @@ func (m model) tabView() string {
 	return strings.Join(rows[start:end], "\n") + "\n\n↑/↓ scroll · PgUp/PgDown page · Ctrl+P commands · q quit"
 }
 func (m model) reportRows() ([]string, []int) {
-	rows := []string{"Review reports · ←/→ history · Enter or click opens report"}
+	rows := []string{"Live review report · Enter or click opens Markdown file"}
 	mapping := []int{-1}
 	if len(m.state.Reports) == 0 {
 		rows = append(rows, "No report has been generated yet.")
 		mapping = append(mapping, -1)
 		return rows, mapping
 	}
-	i := max(0, min(m.reportIndex, len(m.state.Reports)-1))
+	// State.Reports may contain entries from older sessions; only its latest
+	// report represents the live report shown by the UI.
+	i := len(m.state.Reports) - 1
 	r := m.state.Reports[i]
 	stamp := ""
 	if !r.CreatedAt.IsZero() {
@@ -986,7 +989,12 @@ func (m model) reportRows() ([]string, []int) {
 	if r.Stale {
 		flag = "stale"
 	}
-	extra := []string{fmt.Sprintf("Report %d/%d · %s · %s", i+1, len(m.state.Reports), stamp, flag), "head " + short(r.HeadSHA) + " · base " + short(r.BaseSHA), "", r.Text}
+	phase := strings.ToLower(m.state.Phase)
+	progress := ""
+	if r.InProgress || (strings.Contains(phase, "review") && (strings.Contains(phase, "progress") || strings.Contains(phase, "running") || strings.Contains(phase, "reviewing"))) {
+		progress = " · review in progress"
+	}
+	extra := []string{fmt.Sprintf("Report · %s · %s%s", stamp, flag, progress), "head " + short(r.HeadSHA) + " · base " + short(r.BaseSHA), "", renderReportMarkdown(r.Text, effectiveWidth(m.width))}
 	if r.Path != "" {
 		extra = append(extra, "", "File: "+r.Path)
 	}
@@ -1174,9 +1182,45 @@ func (m *model) setTab(next tab) {
 		m.scrollByTab = map[tab]int{}
 	}
 	m.scrollByTab[m.active] = m.scroll
+	_, remembered := m.scrollByTab[next]
 	m.active = next
 	m.scroll = m.scrollByTab[next]
+	if next == reportTab && !remembered {
+		m.setReportTop(0)
+	}
 	m.follow = m.scroll == 0
+}
+
+func (m model) reportTop() int {
+	width, visible := m.reportViewport()
+	layout := m
+	layout.width = width
+	rows, _ := layout.reportRows()
+	wrapped := wrapRows(rows, width)
+	return max(0, len(wrapped)-m.scroll-visible)
+}
+
+func (m *model) setReportTop(top int) {
+	width, visible := m.reportViewport()
+	layout := *m
+	layout.width = width
+	rows, _ := layout.reportRows()
+	wrapped := wrapRows(rows, width)
+	top = max(0, min(top, max(0, len(wrapped)-visible)))
+	m.scroll = max(0, len(wrapped)-visible-top)
+	if m.scrollByTab == nil {
+		m.scrollByTab = map[tab]int{}
+	}
+	m.scrollByTab[reportTab] = m.scroll
+}
+
+func (m model) reportViewport() (width, visible int) {
+	width, height := effectiveWidth(m.width), m.height
+	if !m.framed && m.dashboard() && !m.launcherMode {
+		_, main, _, _, content := m.dashboardSize()
+		width, height = effectiveWidth(main-4), content+3
+	}
+	return width, max(0, height-5-m.overlayRows())
 }
 
 func (m *model) emit(kind, text, id string) {
@@ -1186,7 +1230,7 @@ func (m *model) emit(kind, text, id string) {
 }
 func (m *model) openReport() {
 	if len(m.state.Reports) > 0 {
-		m.emit("open", m.state.Reports[max(0, min(m.reportIndex, len(m.state.Reports)-1))].Path, "")
+		m.emit("open", m.state.Reports[len(m.state.Reports)-1].Path, "")
 	}
 }
 func (m *model) openCheck() {

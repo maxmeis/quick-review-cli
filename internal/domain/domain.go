@@ -53,12 +53,13 @@ type Agent struct {
 	Detail string
 }
 type Report struct {
-	Path      string    `json:"path"`
-	HeadSHA   string    `json:"headSHA"`
-	BaseSHA   string    `json:"baseSHA"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
-	Stale     bool      `json:"stale"`
+	Path       string    `json:"path"`
+	HeadSHA    string    `json:"headSHA"`
+	BaseSHA    string    `json:"baseSHA"`
+	Text       string    `json:"text"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Stale      bool      `json:"stale"`
+	InProgress bool      `json:"inProgress,omitempty"`
 }
 type Question struct {
 	ID      string
