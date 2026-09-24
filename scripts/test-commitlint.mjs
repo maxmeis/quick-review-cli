@@ -4,8 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const repoRoot = path.resolve(new URL('../', import.meta.url).pathname);
+const repoRoot = fileURLToPath(new URL('../', import.meta.url));
 
 function command(cmd, args, cwd, options = {}) {
   return spawnSync(cmd, args, { cwd, encoding: 'utf8', ...options });
@@ -21,7 +22,12 @@ function makeFixture(t) {
   command('git', ['config', 'user.name', 'Hook Test'], repo);
   command('git', ['config', 'user.email', 'hooks@example.invalid'], repo);
   command('git', ['config', 'commit.gpgsign', 'false'], repo);
-  command('git', ['config', 'core.hooksPath', path.join(repoRoot, '.husky', '_')], repo);
+  mkdirSync(path.join(repo, '.husky'));
+  for (const hook of ['commit-msg', 'pre-push']) {
+    cpSync(path.join(repoRoot, '.husky', hook), path.join(repo, '.husky', hook));
+  }
+  const installed = command(process.execPath, [path.join(repoRoot, 'node_modules/husky/bin.js')], repo, { env: hookEnv() });
+  assert.equal(installed.status, 0, installed.stderr);
   symlinkSync(path.join(repoRoot, 'node_modules'), path.join(repo, 'node_modules'), 'dir');
   cpSync(path.join(repoRoot, 'commitlint.config.cjs'), path.join(repo, 'commitlint.config.cjs'));
   writeFileSync(path.join(repo, 'tracked.txt'), 'fixture\n');
