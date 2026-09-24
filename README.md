@@ -2,7 +2,9 @@
 
 Quick Review is a Go terminal app for reviewing GitHub pull requests with a live, read-only Codex review. It uses your existing logged-in GitHub CLI (`gh`) and Codex CLI (`codex`); it does not need a separate GitHub token or OpenAI API key setup.
 
-The interface has six tabs: Chat, Changes, Checks, Agents, Report, and Activity. It supports keyboard and mouse navigation. Review checkouts live in a dedicated directory for each revision. Completed Markdown reports and session history are saved separately from those checkouts.
+![Quick Review terminal workspace](docs/testing/ui/chat.png)
+
+The interface has six tabs: Chat, Changes, Checks, Agents, Report, and Activity. Built with **Bubble Tea**, **Bubbles**, and **Lip Gloss**, it supports keyboard and mouse navigation. Wide terminals show a live PR sidebar; narrower windows use a single workspace panel. Review checkouts live in a dedicated directory for each revision. Completed Markdown reports and session history are saved separately from those checkouts.
 
 ## Requirements
 

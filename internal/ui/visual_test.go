@@ -42,7 +42,7 @@ func TestExportVisualFixtures(t *testing.T) {
 		m.active = tab(i)
 		captures[name] = m.View()
 	}
-	for _, name := range []string{"Launcher", "Question", "Quit", "Narrow", "Disconnected"} {
+	for _, name := range []string{"Launcher", "Question", "Quit", "Narrow", "Compact", "Disconnected"} {
 		state := s
 		if name == "Launcher" {
 			state = domain.State{}
@@ -55,6 +55,8 @@ func TestExportVisualFixtures(t *testing.T) {
 			m.questionFocus = true
 		case "Quit":
 			m.quitDialog = true
+		case "Compact":
+			m = apply(m, tea.WindowSizeMsg{Width: 80, Height: 28})
 		case "Narrow":
 			m = apply(m, tea.WindowSizeMsg{Width: 40, Height: 20})
 		case "Disconnected":
