@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -105,6 +106,12 @@ func TestCallsFailCleanly(t *testing.T) {
 	}
 }
 
+func TestRPCErrorString(t *testing.T) {
+	if got := (&RPCError{Code: -32601, Message: "unsupported"}).Error(); got != "Codex: unsupported (-32601)" {
+		t.Fatalf("RPCError.Error() = %q", got)
+	}
+}
+
 type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
@@ -151,6 +158,36 @@ func TestMalformedAndEOF(t *testing.T) {
 			t.Fatal("expected termination")
 		}
 		c.Close()
+	}
+}
+
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestReadErrorAndDroppedResponse(t *testing.T) {
+	readErr := errors.New("read failed")
+	c := &Client{done: make(chan struct{}), pending: map[string]chan Message{}, once: sync.Once{}}
+	c.read(failingReader{readErr})
+	if !errors.Is(c.Err(), readErr) {
+		t.Fatalf("read error = %v", c.Err())
+	}
+
+	responses := `{"id":1,"result":{}}` + "\n" + `{"id":1,"result":{}}` + "\n"
+	responseClient := &Client{done: make(chan struct{}), pending: map[string]chan Message{"1": make(chan Message, 1)}, once: sync.Once{}}
+	responseClient.read(strings.NewReader(responses))
+	if len(responseClient.pending["1"]) != 1 {
+		t.Fatal("buffered response was lost or duplicate response blocked the reader")
+	}
+
+	done := make(chan struct{})
+	close(done)
+	closedClient := &Client{done: done, incoming: make(chan Message), pending: map[string]chan Message{}, once: sync.Once{}}
+	closedClient.read(strings.NewReader(`{"method":"event"}` + "\n"))
+	select {
+	case <-closedClient.done:
+	default:
+		t.Fatal("read did not return when client was already done")
 	}
 }
 func TestNotificationsAndServerRequests(t *testing.T) {
@@ -206,6 +243,19 @@ func TestStartMissingExecutable(t *testing.T) {
 		t.Fatal("wanted executable error")
 	}
 }
+
+func TestStartCommandPipeErrors(t *testing.T) {
+	stdout := exec.Command("unused")
+	stdout.Stdout = io.Discard
+	if _, err := startCommand(stdout); err == nil {
+		t.Fatal("startCommand accepted preconfigured stdout")
+	}
+	stdin := exec.Command("unused")
+	stdin.Stdin = strings.NewReader("")
+	if _, err := startCommand(stdin); err == nil {
+		t.Fatal("startCommand accepted preconfigured stdin")
+	}
+}
 func TestStartLocalProcess(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
@@ -218,4 +268,67 @@ func TestStartLocalProcess(t *testing.T) {
 		t.Fatal(e)
 	}
 	c.Close()
+}
+
+func TestStartForceStopsProcessThatIgnoresStdin(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLongLivedCodexChild$")
+	cmd.Env = append(os.Environ(), "QUICK_REVIEW_CODEX_CHILD=1")
+	configureProcess(cmd)
+	c, err := startCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	c.Close()
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("Close took %s; process was not force-stopped", elapsed)
+	}
+}
+
+func TestLongLivedCodexChild(t *testing.T) {
+	if os.Getenv("QUICK_REVIEW_CODEX_CHILD") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+type scriptedResponseWriter struct {
+	writer *io.PipeWriter
+	writes int
+	failAt int
+}
+
+func (w *scriptedResponseWriter) Write(p []byte) (int, error) {
+	w.writes++
+	switch w.writes {
+	case 1:
+		_, err := io.WriteString(w.writer, `{"id":1,"result":{}}`+"\n")
+		return len(p), err
+	case 2:
+		if w.failAt == 2 {
+			return 0, errors.New("second write failed")
+		}
+	case 3:
+		_, err := io.WriteString(w.writer, `{"id":2,"error":{"code":-1,"message":"account read failed"}}`+"\n")
+		return len(p), err
+	}
+	return len(p), nil
+}
+
+func TestInitializeNotifyAndAccountErrors(t *testing.T) {
+	initReader, initWriter := io.Pipe()
+	initialized := New(initReader, &scriptedResponseWriter{writer: initWriter, failAt: 2}, func() { _ = initReader.Close(); _ = initWriter.Close() })
+	defer initialized.Close()
+	if err := initialized.Initialize(context.Background()); err == nil || !strings.Contains(err.Error(), "second write failed") {
+		t.Fatalf("Initialize notification error = %v", err)
+	}
+
+	accountReader, accountWriter := io.Pipe()
+	accountError := New(accountReader, &scriptedResponseWriter{writer: accountWriter}, func() { _ = accountReader.Close(); _ = accountWriter.Close() })
+	defer accountError.Close()
+	if err := accountError.Initialize(context.Background()); err == nil || !strings.Contains(err.Error(), "account read failed") {
+		t.Fatalf("Initialize account error = %v", err)
+	}
 }

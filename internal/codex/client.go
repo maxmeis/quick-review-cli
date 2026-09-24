@@ -53,17 +53,24 @@ func New(r io.Reader, w io.Writer, closeFn func()) *Client {
 func Start(ctx context.Context) (*Client, error) {
 	cmd := exec.CommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
 	configureProcess(cmd)
+	return startCommand(cmd)
+}
+
+func startCommand(cmd *exec.Cmd) (*Client, error) {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
+		_ = out.Close()
 		return nil, err
 	}
 	// Never mix human diagnostic output into the protocol stream.
 	cmd.Stderr = io.Discard
 	if err = cmd.Start(); err != nil {
+		_ = out.Close()
+		_ = in.Close()
 		return nil, fmt.Errorf("start Codex: %w", err)
 	}
 	exited := make(chan struct{})
