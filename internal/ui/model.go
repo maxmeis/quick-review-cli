@@ -139,6 +139,7 @@ func NewModel(initial domain.State, dispatch func(domain.Action)) tea.Model {
 	m.launcher = textinput.New()
 	m.launcher.Placeholder = "https://github.com/owner/repo/pull/123"
 	m.launcher.CharLimit = 512
+	m.launcher.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#435466", Dark: "#B8C5D2"})
 	m.launcher.Focus()
 	m.search = textinput.New()
 	m.search.Placeholder = "Search activity…"
@@ -147,7 +148,9 @@ func NewModel(initial domain.State, dispatch func(domain.Action)) tea.Model {
 	m.answer = textinput.New()
 	m.answer.Placeholder = "Type your answer…"
 	m.composer = textarea.New()
-	m.composer.Placeholder = "Write a reply…  (Enter sends, Alt+Enter adds a line)"
+	m.composer.Placeholder = "Write a reply…"
+	m.composer.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#435466", Dark: "#B8C5D2"})
+	m.composer.BlurredStyle.Placeholder = m.composer.FocusedStyle.Placeholder
 	m.composer.SetWidth(70)
 	m.composer.SetHeight(2)
 	m.composer.ShowLineNumbers = false
@@ -226,11 +229,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = v.Width, v.Height
 		m.composer.SetWidth(max(20, v.Width-4))
 		m.composer.SetHeight(max(1, min(2, v.Height-6)))
+		m.launcher.Width = max(10, v.Width-8)
 		m.search.Width = max(20, v.Width-6)
 		m.command.Width = max(20, v.Width-6)
 		m.answer.Width = max(20, v.Width-6)
 		return m, nil
 	case tea.MouseMsg:
+		if m.quitDialog && (v.Y != 3 || v.Button != tea.MouseButtonLeft) {
+			return m, nil
+		}
 		if v.Action == tea.MouseActionPress {
 			if v.Button == tea.MouseButtonWheelUp {
 				return m.scrollBy(-3), nil
@@ -642,8 +649,8 @@ func (m model) View() string {
 	if w > 180 {
 		w = 180
 	}
-	hs := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F0E8"))
-	ts := lipgloss.NewStyle().Foreground(lipgloss.Color("#B8C5D2"))
+	hs := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#202C39", Dark: "#F4F0E8"})
+	ts := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#435466", Dark: "#B8C5D2"})
 	if m.noColor {
 		hs = lipgloss.NewStyle().Bold(true)
 		ts = lipgloss.NewStyle()
@@ -688,7 +695,7 @@ func (m model) View() string {
 	if m.noColor {
 		ciDot = "●"
 	}
-	line2 := ciDot + " CI " + ci + "   ·   head " + first(sha, "—") + "   ·   " + reviewed + "   ·   " + conn
+	line2 := ciDot + " CI " + ci + " · " + first(m.state.Phase, "Ready") + " · head " + first(sha, "—") + "   ·   " + reviewed + "   ·   " + conn
 	if w < 82 {
 		line2 = ciDot + " CI " + ci + " · h" + shortN(sha, 6) + " r" + shortN(m.state.ReviewedHead, 6)
 		if strings.Contains(strings.ToLower(conn), "stale") {
@@ -698,21 +705,13 @@ func (m model) View() string {
 		}
 	}
 	if w < 50 {
-		connectionLabel := "ok"
-		if strings.Contains(strings.ToLower(conn), "stale") {
-			connectionLabel = "stale"
-		}
-		line2 = fmt.Sprintf("CI %s h%s r%s %s", ci, shortN(first(sha, "?"), 4), shortN(first(m.state.ReviewedHead, "?"), 4), connectionLabel)
-	}
-	if w < 36 {
-		connectionLabel := "ok"
-		if strings.Contains(strings.ToLower(conn), "stale") {
-			connectionLabel = "stale"
-		}
-		line2 = fmt.Sprintf("CI %s h%s r%s %s", ci, shortN(first(sha, "?"), 3), shortN(first(m.state.ReviewedHead, "?"), 3), connectionLabel)
+		line2 = ciDot + " CI " + ci + " · " + first(m.state.Phase, "Ready")
 	}
 	if m.state.Paused {
 		line2 += "   ·   PAUSED"
+	}
+	if m.state.Error != "" && w < 82 {
+		line2 = oneLine(m.state.Error)
 	}
 	if pr.Number == 0 {
 		line2 = " Paste a GitHub pull request URL to begin"
@@ -859,7 +858,10 @@ func (m model) questionRows(width int, height int) ([]string, []int) {
 func (m model) chatGeometry(width, height int) ([]string, []int, []string, []int, int) {
 	timeline := make([]string, 0, len(m.state.Events)+4)
 	for _, event := range m.state.Events {
-		timeline = append(timeline, formatEvent(event))
+		if event.Kind == "activity" || event.Kind == "tool" {
+			continue // Detailed protocol and command output remains in Activity.
+		}
+		timeline = append(timeline, first(event.Source, "Review")+" · "+first(event.Kind, "event")+"\n"+event.Text+"\n")
 	}
 	if strings.TrimSpace(m.state.DraftReply) != "" {
 		timeline = append(timeline, "Codex · streaming\n"+strings.TrimSpace(m.state.DraftReply))
@@ -1148,7 +1150,7 @@ func renderTabs(width int, active tab, noColor bool) string {
 				labels[i] = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#315D67")).Render(label)
 			}
 		} else if !noColor {
-			labels[i] = lipgloss.NewStyle().Foreground(lipgloss.Color("#9BA9B5")).Render(label)
+			labels[i] = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#435466", Dark: "#9BA9B5"}).Render(label)
 		}
 	}
 	return strings.Join(labels, " ")
