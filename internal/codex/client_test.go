@@ -1,0 +1,221 @@
+package codex
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func server(t *testing.T, handler func(Message) any) (*Client, func()) {
+	t.Helper()
+	a, b := net.Pipe()
+	c := New(a, a, func() { a.Close() })
+	go func() {
+		s := bufio.NewScanner(b)
+		for s.Scan() {
+			var m Message
+			_ = json.Unmarshal(s.Bytes(), &m)
+			if len(m.ID) > 0 {
+				result := handler(m)
+				var v any = map[string]any{"id": m.ID, "result": result}
+				if e, ok := result.(*RPCError); ok {
+					v = map[string]any{"id": m.ID, "error": e}
+				}
+				_ = json.NewEncoder(b).Encode(v)
+			}
+		}
+	}()
+	return c, func() { c.Close(); b.Close() }
+}
+func TestProtocolLifecycle(t *testing.T) {
+	var mu sync.Mutex
+	var methods []string
+	c, close := server(t, func(m Message) any {
+		mu.Lock()
+		defer mu.Unlock()
+		methods = append(methods, m.Method)
+		switch m.Method {
+		case "account/read":
+			return map[string]any{"account": map[string]string{"type": "chatgpt"}}
+		case "thread/start", "thread/resume":
+			return map[string]any{"thread": map[string]string{"id": "thread"}}
+		case "turn/start":
+			return map[string]any{"turn": map[string]string{"id": "turn"}}
+		}
+		return map[string]any{}
+	})
+	defer close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, existing := range []string{"", "thread"} {
+		id, err := c.Thread(ctx, "/tmp", existing, "playbook")
+		if err != nil || id != "thread" {
+			t.Fatalf("%s %v", id, err)
+		}
+	}
+	if id, err := c.Turn(ctx, "thread", "/tmp", "hello"); err != nil || id != "turn" {
+		t.Fatalf("%s %v", id, err)
+	}
+	if err := c.Steer(ctx, "thread", "turn", "update"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Interrupt(ctx, "thread", "turn"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methods) != 7 {
+		t.Fatal(methods)
+	}
+}
+func TestCallsFailCleanly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result any
+		call   func(*Client) error
+	}{
+		{"rpc error", &RPCError{-1, "oops"}, func(c *Client) error { return c.Call(context.Background(), "x", nil, nil) }},
+		{"invalid result", "bad", func(c *Client) error { var v int; return c.Call(context.Background(), "x", nil, &v) }},
+		{"no account", map[string]any{"account": nil}, func(c *Client) error { return c.Initialize(context.Background()) }},
+		{"no thread", map[string]any{}, func(c *Client) error { _, e := c.Thread(context.Background(), "", "", ""); return e }},
+		{"no turn", map[string]any{}, func(c *Client) error { _, e := c.Turn(context.Background(), "", "", ""); return e }},
+		{"thread rpc", &RPCError{-1, "oops"}, func(c *Client) error { _, e := c.Thread(context.Background(), "", "", ""); return e }},
+		{"initialize rpc", &RPCError{-1, "oops"}, func(c *Client) error { return c.Initialize(context.Background()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, close := server(t, func(Message) any { return tc.result })
+			defer close()
+			if e := tc.call(c); e == nil {
+				t.Fatal("wanted error")
+			}
+		})
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func TestWriteFailureAndCancellation(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	c := New(r, failWriter{}, func() { r.Close() })
+	defer c.Close()
+	if e := c.Call(context.Background(), "x", nil, nil); e == nil {
+		t.Fatal("wanted write error")
+	}
+	if e := c.Notify("x", nil); e == nil {
+		t.Fatal("notify error")
+	}
+	if e := c.Reply(json.RawMessage(`"s"`), nil); e == nil {
+		t.Fatal("reply error")
+	}
+	if e := c.Reject(json.RawMessage(`1`), "unsupported"); e == nil {
+		t.Fatal("reject error")
+	}
+	r2, w2 := io.Pipe()
+	defer w2.Close()
+	c2 := New(r2, io.Discard, func() { r2.Close() })
+	defer c2.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if e := c2.Call(ctx, "x", nil, nil); !errors.Is(e, context.Canceled) {
+		t.Fatal(e)
+	}
+	c2.Close()
+	if e := c2.Call(context.Background(), "x", nil, nil); e == nil {
+		t.Fatal("wanted disconnected")
+	}
+}
+func TestMalformedAndEOF(t *testing.T) {
+	for _, input := range []string{"not json\n", ""} {
+		c := New(strings.NewReader(input), io.Discard, nil)
+		select {
+		case <-c.Done():
+		case <-time.After(time.Second):
+			t.Fatal("timeout")
+		}
+		if c.Err() == nil {
+			t.Fatal("expected termination")
+		}
+		c.Close()
+	}
+}
+func TestNotificationsAndServerRequests(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := New(a, a, func() { a.Close() })
+	defer c.Close()
+	go func() {
+		fmt.Fprintln(b, `{"method":"turn/started","params":{"id":"t"}}`)
+		fmt.Fprintln(b, `{"id":"request","method":"approval","params":{}}`)
+	}()
+	for _, method := range []string{"turn/started", "approval"} {
+		select {
+		case m := <-c.Events():
+			if m.Method != method {
+				t.Fatal(m)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout")
+		}
+	}
+	reply := make(chan Message, 1)
+	go func() { var m Message; _ = json.NewDecoder(b).Decode(&m); reply <- m }()
+	if e := c.Reply(json.RawMessage(`"request"`), map[string]string{"decision": "decline"}); e != nil {
+		t.Fatal(e)
+	}
+	if m := <-reply; string(m.ID) != `"request"` {
+		t.Fatal(m)
+	}
+}
+func TestNotificationBacklogDoesNotBlockRPC(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := New(a, a, func() { a.Close() })
+	defer c.Close()
+	go func() {
+		for i := 0; i < 2000; i++ {
+			fmt.Fprintln(b, `{"method":"event","params":{}}`)
+		}
+		var m Message
+		_ = json.NewDecoder(b).Decode(&m)
+		fmt.Fprintf(b, "{\"id\":%s,\"result\":{}}\n", m.ID)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if e := c.Call(ctx, "x", nil, nil); e != nil {
+		t.Fatal(e)
+	}
+}
+func TestStartMissingExecutable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, e := Start(context.Background()); e == nil {
+		t.Fatal("wanted executable error")
+	}
+}
+func TestStartLocalProcess(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	if e := os.WriteFile(script, []byte("#!/bin/sh\nwhile read line; do :; done\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PATH", dir)
+	c, e := Start(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	c.Close()
+}
