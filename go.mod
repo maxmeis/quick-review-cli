@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/coreequip/mermaidascii v0.2.0
+	github.com/creack/pty v1.1.24
 	github.com/muesli/termenv v0.16.0
 )
 

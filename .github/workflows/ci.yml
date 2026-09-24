@@ -29,8 +29,17 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
       - run: go mod download
-      - name: Build, vet, race tests, and strict 100% coverage
+      - name: Build, vet, race tests, strict 100% coverage, and mocked E2E
+        env:
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/review-e2e
         run: make verify
+      - name: Upload terminal transcripts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/review-e2e/
+          if-no-files-found: ignore
 
   standards:
     name: Commit and release checks
