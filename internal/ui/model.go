@@ -198,6 +198,7 @@ func (m model) Init() tea.Cmd { return textarea.Blink }
 func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case stateMsg:
+		previous := m.state
 		oldN := len(m.state.Events)
 		preserveReportPosition := m.active == reportTab
 		reportStart := m.reportTop()
@@ -208,8 +209,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.questionIndex == -1 && len(m.state.Questions) > 0 {
 			m.questionIndex = 0
 		}
-		m.suppressQuit = false
-		if m.state.QuitRequested || m.state.ClosedPrompt {
+		// Keep a dismissed prompt suppressed until the controller acknowledges
+		// cancellation. Already queued review updates can still carry the old
+		// prompt flag. A different PR lifecycle state is a genuinely new prompt.
+		if !m.state.QuitRequested && !m.state.ClosedPrompt {
+			m.suppressQuit = false
+		} else if !m.suppressQuit || m.state.Snapshot.State != previous.Snapshot.State ||
+			(m.state.ClosedPrompt && !previous.ClosedPrompt) || (m.state.QuitRequested && !previous.QuitRequested) {
+			m.suppressQuit = false
 			m.quitDialog = true
 		}
 		if len(m.state.Events) > oldN && !m.follow {
