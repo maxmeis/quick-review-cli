@@ -71,3 +71,35 @@ Linux/macOS CI jobs enforce both 100% Go statement coverage and the E2E suite.
 Set `E2E_ARTIFACT_DIR=/tmp/review-e2e` to save terminal transcripts. CI uploads
 those transcripts on failure. Run `make e2e` repeatedly when changing timing or
 watcher behavior; tests use condition-based waits with bounded timeouts.
+
+## Protected main and squash merges
+
+Every PR (including draft PRs and title edits) runs the full required checks.
+Feature-branch pushes are validated through their PR; `main` pushes run the
+checks again and then release automation. Older PR runs are cancelled when
+superseded. Main/release runs are not cancelled by newer pushes.
+
+`main` requires a pull request, an up-to-date branch, passing Linux/macOS and
+commit/release checks from GitHub Actions, and resolved review conversations.
+These requirements apply to administrators too. Required approval count is
+zero for solo maintenance; PRs and checks remain mandatory. Force pushes and
+branch deletion are disabled. Only squash merging is available, with the PR
+title and body as the commit message. Merged branches are deleted automatically.
+Auto-merge is available and still waits for the required checks.
+
+Use `!` in the PR title for breaking changes. PR bodies are retained, including
+any `BREAKING CHANGE:` footer. Version creation remains semantic: `fix`/`perf`
+produce patches, `feat` produces minors, and breaking changes produce majors;
+chore/test/docs-only pushes complete without creating a version. Failed release
+runs can be rerun, or retried with **Actions → CI → Run workflow → main**.
+
+The applied GitHub settings are tracked in `.github/repository/`. To reapply
+these settings as a repository administrator:
+
+```sh
+gh api --method PATCH repos/maxmeis/quick-review-cli --input .github/repository/settings.json
+gh api --method PUT repos/maxmeis/quick-review-cli/branches/main/protection --input .github/repository/main-protection.json
+```
+
+Weekly Dependabot PRs cover Go modules, development tooling, and GitHub Actions.
+They use Conventional Commit titles and go through the same checks.

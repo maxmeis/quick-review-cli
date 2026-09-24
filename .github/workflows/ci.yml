@@ -2,10 +2,14 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -21,6 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,6 +49,7 @@ jobs:
   standards:
     name: Commit and release checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,11 +64,12 @@ jobs:
       - name: Check all commits introduced since adoption
         # Earlier project history is deliberately grandfathered in.
         run: pnpm exec commitlint --from fc3a39fbf0e1e25786ef8c3b96537c72eeaf74b7 --to HEAD --verbose
-      - name: Validate PR title for squash merges
+      - name: Validate squash commit title and body
         if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" | pnpm exec commitlint
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -87,8 +94,9 @@ jobs:
   release:
     name: SemVer release
     needs: [verify, standards]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: semver-release
       cancel-in-progress: false
