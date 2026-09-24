@@ -2,10 +2,80 @@ package ui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+	charmansi "github.com/charmbracelet/x/ansi"
 	"quick-review-cli/internal/domain"
 	"strings"
 	"testing"
 )
+
+func TestAdversarialDimensionsAndUnicodeNeverOverflowRows(t *testing.T) {
+	widths := []int{0, 1, 2, 19, 20, 21, 23, 24, 35, 36, 37, 49, 50, 51, 81, 82, 83, 179, 180, 181, 512}
+	heights := []int{0, 1, 2, 5, 6, 7, 8, 12, 13, 14, 15, 24, 32, 100}
+	s := testState()
+	s.Snapshot.Title = "修复 widget 👩🏽‍💻 é"
+	s.Snapshot.PR.Owner = "例子"
+	s.DraftReply = strings.Repeat("🙂界é", 30)
+	s.Events = append(s.Events, domain.Event{ID: 3, Source: "Agent🧪", Kind: "review", Text: strings.Repeat("長い説明🙂", 30)})
+	s.Questions[0].Title = strings.Repeat("選択🙂", 30)
+	s.Questions[0].Prompt = strings.Repeat("説明 é 👩🏽‍💻 ", 30)
+	s.Questions[0].Options = []string{strings.Repeat("yes🙂", 30), "no"}
+	for _, w := range widths {
+		for _, h := range heights {
+			m := NewModel(s, nil).(model)
+			m = apply(m, tea.WindowSizeMsg{Width: w, Height: h})
+			for _, page := range []tab{chatTab, changesTab, checksTab, agentsTab, reportTab, activityTab} {
+				m.active = page
+				v := m.View()
+				if got, want := len(strings.Split(v, "\n")), max(6, h); got > want {
+					t.Fatalf("width=%d height=%d page=%d produced %d rows, max %d", w, h, page, got, want)
+				}
+				for i, line := range strings.Split(v, "\n") {
+					if cells := charmansi.StringWidth(line); cells > effectiveWidth(w) {
+						t.Fatalf("width=%d height=%d page=%d row=%d uses %d cells: %q", w, h, page, i, cells, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestShortNDoesNotSplitUnicode(t *testing.T) {
+	got := shortN("界🙂x", 4)
+	if !strings.HasPrefix(got, "界") || strings.ToValidUTF8(got, "�") != got {
+		t.Fatalf("invalid unicode truncation: %q", got)
+	}
+	if shortN("a", 0) != "" || shortN("界", 3) != "界" {
+		t.Fatal("shortN did not handle zero width and an exact UTF-8 byte boundary")
+	}
+}
+
+func TestMinimumChatHeightKeepsComposerVisible(t *testing.T) {
+	m := NewModel(testState(), nil).(model)
+	m.width, m.height = 24, 6
+	view := m.View()
+	if !strings.Contains(view, "Write a reply") {
+		t.Fatalf("composer is inaccessible in the minimum supported terminal: %q", view)
+	}
+}
+
+func TestAdversarialMouseCoordinatesStayBounded(t *testing.T) {
+	for _, pane := range []tab{chatTab, changesTab, checksTab, agentsTab, reportTab, activityTab} {
+		m := NewModel(testState(), nil).(model)
+		m.width, m.height, m.active = 37, 8, pane
+		for _, x := range []int{-100, -1, 0, 36, 37, 100000} {
+			for _, y := range []int{-100, -1, 0, 2, 3, 4, 7, 8, 100000} {
+				m = apply(m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+				m = apply(m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+				if m.selectedEvent < -1 || m.selectedFile < 0 || m.reportIndex < 0 {
+					t.Fatalf("pane=%d mouse=(%d,%d) produced invalid selection", pane, x, y)
+				}
+				if viewRows := len(strings.Split(m.View(), "\n")); viewRows > m.height {
+					t.Fatalf("pane=%d mouse=(%d,%d) produced %d rows", pane, x, y, viewRows)
+				}
+			}
+		}
+	}
+}
 
 func TestPreserveScrollWithoutInitializedTabMap(t *testing.T) {
 	m := NewModel(testState(), nil).(model)

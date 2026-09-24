@@ -225,6 +225,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
 		m.composer.SetWidth(max(20, v.Width-4))
+		m.composer.SetHeight(max(1, min(2, v.Height-6)))
 		m.search.Width = max(20, v.Width-6)
 		m.command.Width = max(20, v.Width-6)
 		m.answer.Width = max(20, v.Width-6)
@@ -776,7 +777,12 @@ func wrapRows(rows []string, width int) []string {
 		parts := strings.Split(row, "\n")
 		for _, part := range parts {
 			wrapped := charmansi.WrapWc(part, width, " /.:,·")
-			out = append(out, strings.Split(wrapped, "\n")...)
+			for _, line := range strings.Split(wrapped, "\n") {
+				// WrapWc preserves unbreakable runs even when they exceed width.
+				// Clip those runs so paths, hashes, and user text cannot push the
+				// terminal into a wider layout than the current viewport.
+				out = append(out, charmansi.TruncateWc(line, width, "…"))
+			}
 		}
 	}
 	return out
@@ -799,10 +805,21 @@ func wrapMappedRows(rows []string, mapping []int, width int) ([]string, []int) {
 }
 func oneLine(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\t", " ") }
 func shortN(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if n <= 0 {
+		return ""
 	}
-	return s
+	if len(s) <= n {
+		return s
+	}
+	end := 0
+	for i, r := range s {
+		next := i + len(string(r))
+		if next > n {
+			break
+		}
+		end = next
+	}
+	return s[:end]
 }
 
 func (m model) questionRows(width int, height int) ([]string, []int) {
@@ -857,13 +874,31 @@ func (m model) chatGeometry(width, height int) ([]string, []int, []string, []int
 	if m.answerMode {
 		answer = wrapRows([]string{"Freeform answer: " + m.answer.View()}, width)
 	}
-	fixed := len(qrows) + len(answer) + 1 + len(composer) + 1
-	if height >= 14 {
-		fixed++
+	// Keep the composer visible when a long prompt or a tiny terminal would
+	// otherwise push the footer below the viewport.
+	contentHeight := max(0, height-3-m.overlayRows())
+	footerBase := len(answer) + 1 + len(composer)
+	questionLimit := max(0, contentHeight-footerBase)
+	if len(qrows) > questionLimit {
+		qrows = qrows[:questionLimit]
+		qmap = qmap[:questionLimit]
 	}
-	fixed += m.overlayRows()
-	bodyHeight := max(0, height-3-fixed)
+	footerUsed := footerBase + len(qrows)
+	help := chatHelp(height, contentHeight, footerUsed)
+	bodyHeight := max(0, contentHeight-footerUsed-len(help))
 	return timeline, mapping, qrows, qmap, bodyHeight
+}
+
+func chatHelp(height, contentHeight, used int) []string {
+	help := []string{}
+	if used < contentHeight {
+		help = append(help, "Enter sends · Alt+Enter newline · Ctrl+P commands")
+		used++
+	}
+	if height >= 14 && used < contentHeight {
+		help = append(help, "↑/↓ scroll · PgUp/PgDown page · new activity appears in header")
+	}
+	return help
 }
 func (m model) chatView() string {
 	width := effectiveWidth(m.width)
@@ -881,10 +916,8 @@ func (m model) chatView() string {
 	}
 	footer = append(footer, "")
 	footer = append(footer, wrapRows(strings.Split(m.composer.View(), "\n"), width)...)
-	footer = append(footer, wrapRows([]string{"Enter sends · Alt+Enter newline · Ctrl+P commands"}, width)...)
-	if height >= 14 {
-		footer = append(footer, wrapRows([]string{"↑/↓ scroll · PgUp/PgDown page · new activity appears in header"}, width)...)
-	}
+	contentHeight := max(0, height-3-m.overlayRows())
+	footer = append(footer, wrapRows(chatHelp(height, contentHeight, len(footer)), width)...)
 	lines := append(body, footer...)
 	return strings.Join(lines, "\n")
 }
