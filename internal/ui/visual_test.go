@@ -38,7 +38,7 @@ func TestExportVisualFixtures(t *testing.T) {
 	captures := map[string]string{}
 	for i, name := range tabNames {
 		m := NewModel(s, nil).(model)
-		m = apply(m, tea.WindowSizeMsg{Width: 110, Height: 28})
+		m = apply(m, tea.WindowSizeMsg{Width: 120, Height: 34})
 		m.active = tab(i)
 		captures[name] = m.View()
 	}
@@ -48,7 +48,7 @@ func TestExportVisualFixtures(t *testing.T) {
 			state = domain.State{}
 		}
 		m := NewModel(state, nil).(model)
-		m = apply(m, tea.WindowSizeMsg{Width: 110, Height: 28})
+		m = apply(m, tea.WindowSizeMsg{Width: 120, Height: 34})
 		switch name {
 		case "Question":
 			m.state.Questions = testState().Questions
@@ -66,7 +66,7 @@ func TestExportVisualFixtures(t *testing.T) {
 	}
 	lipgloss.SetHasDarkBackground(false)
 	light := NewModel(s, nil).(model)
-	light = apply(light, tea.WindowSizeMsg{Width: 110, Height: 28})
+	light = apply(light, tea.WindowSizeMsg{Width: 120, Height: 34})
 	captures["Light"] = light.View()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)

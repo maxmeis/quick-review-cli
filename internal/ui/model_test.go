@@ -21,7 +21,7 @@ func testState() domain.State {
 		Questions: []domain.Question{{ID: "q1", Title: "Review focus", Prompt: "What should I prioritize?", Options: []string{"Correctness", "Performance"}}},
 	}
 }
-func apply(m model, msg tea.Msg) model { updated, _ := m.Update(msg); return updated.(model) }
+func apply(m model, msg tea.Msg) model { updated, _ := m.update(msg); return updated.(model) }
 func key(s string) tea.KeyMsg {
 	if s == "enter" {
 		return tea.KeyMsg{Type: tea.KeyEnter}
@@ -73,7 +73,7 @@ func TestViewTabsAndResize(t *testing.T) {
 	m = apply(m, tea.WindowSizeMsg{Width: 100, Height: 28})
 	for i := 0; i < 6; i++ {
 		m.active = tab(i)
-		v := m.View()
+		v := m.compactView()
 		if !strings.Contains(v, tabNames[i]) {
 			t.Fatalf("missing tab %s: %s", tabNames[i], v)
 		}
@@ -82,7 +82,7 @@ func TestViewTabsAndResize(t *testing.T) {
 		}
 	}
 	m = apply(m, tea.WindowSizeMsg{Width: 24, Height: 8})
-	if got := m.View(); !strings.Contains(got, "#42") {
+	if got := m.compactView(); !strings.Contains(got, "#42") {
 		t.Fatal("narrow render omitted PR header")
 	}
 }
@@ -112,7 +112,7 @@ func TestTabsAndMouse(t *testing.T) {
 		t.Fatal("event click did not open details")
 	}
 	m.active = activityTab
-	_ = m.View()
+	_ = m.compactView()
 }
 func TestChatQuestionAndDraft(t *testing.T) {
 	actions := []domain.Action{}
@@ -153,8 +153,8 @@ func TestChatQuestionAndDraft(t *testing.T) {
 	m.setTab(chatTab)
 	m.height = 30
 	m.width = 100
-	if !strings.Contains(m.View(), "Codex · streaming") || !strings.Contains(m.View(), "controller draft") {
-		t.Fatalf("streaming assistant text was not rendered: %q", m.View())
+	if !strings.Contains(m.compactView(), "Codex · streaming") || !strings.Contains(m.compactView(), "controller draft") {
+		t.Fatalf("streaming assistant text was not rendered: %q", m.compactView())
 	}
 }
 func TestLauncherAndCommands(t *testing.T) {
@@ -350,14 +350,14 @@ func TestEmptyViewsNoColorAndHeaderStates(t *testing.T) {
 	m.noColor = true
 	m.width = 90
 	m.height = 12
-	if got := m.View(); strings.Contains(got, "\x1b[") || !strings.Contains(got, "STALE") || !strings.Contains(got, "error: offline") {
+	if got := m.compactView(); strings.Contains(got, "\x1b[") || !strings.Contains(got, "STALE") || !strings.Contains(got, "error: offline") {
 		t.Fatalf("header or NO_COLOR: %q", got)
 	}
 	s.Reports = nil
 	m = apply(m, stateMsg(s))
 	for i := 0; i < 6; i++ {
 		m.active = tab(i)
-		_ = m.View()
+		_ = m.compactView()
 	}
 	m.active = activityTab
 	if m.visibleEventIndex(0) != -1 {
@@ -455,7 +455,7 @@ func TestInputComponentsAndStateEdgeCases(t *testing.T) {
 	m.selectedEvent = 99
 	m = apply(m, key("enter"))
 	m.selectedEvent = 0
-	_ = m.View()
+	_ = m.compactView()
 	if m.selectedEventID() != 1 {
 		t.Fatal("selected event resolution")
 	}
@@ -490,11 +490,11 @@ func TestMoreKeyboardAndRenderBranches(t *testing.T) {
 	m.width = 80
 	m.active = reportTab
 	m.state.Reports = []domain.Report{{Text: "no timestamp"}}
-	_ = m.View()
+	_ = m.compactView()
 	m.active = activityTab
 	m.filter = "bug"
 	m.sourceFilter = "assistant"
-	_ = m.View()
+	_ = m.compactView()
 	m.active = chatTab
 	m.composer.SetValue("")
 	m = apply(m, tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
@@ -548,32 +548,32 @@ func TestMoreKeyboardAndRenderBranches(t *testing.T) {
 	}
 	m.commandMode = true
 	m.command.SetValue("pause")
-	_ = m.View()
+	_ = m.compactView()
 	m.commandMode = false
 	m.searchMode = true
 	m.search.SetValue("x")
-	_ = m.View()
+	_ = m.compactView()
 	m.noColor = true
 	m.active = reportTab
 	m.state.Reports = testState().Reports
 	m.reportIndex = 1
-	_ = m.View()
+	_ = m.compactView()
 	m.state.Reports = []domain.Report{{Text: "no timestamp"}}
-	_ = m.View()
+	_ = m.compactView()
 	m.active = activityTab
 	m.filter = "bug"
 	m.sourceFilter = "assistant"
-	_ = m.View()
+	_ = m.compactView()
 	m.active = chatTab
 	m.composer.SetValue("")
-	_ = m.View()
+	_ = m.compactView()
 	blank := NewModel(domain.State{}, nil).(model)
 	blank.noColor = true
 	blank.width = 20
 	blank.height = 3
-	_ = blank.View()
+	_ = blank.compactView()
 	blank.active = activityTab
-	_ = blank.View()
+	_ = blank.compactView()
 	if selected := (model{}).selectedEventID(); selected != -1 {
 		t.Fatal(selected)
 	}
@@ -600,7 +600,7 @@ func TestRemainingInteractionBranches(t *testing.T) {
 	m.height = 20
 	m.state.Paused = true
 	m.newActivity = 2
-	_ = m.View()
+	_ = m.compactView()
 	m.active = activityTab
 	m.filter = "does not match"
 	m = apply(m, key("enter"))
@@ -614,19 +614,19 @@ func TestRemainingInteractionBranches(t *testing.T) {
 	m = apply(m, key("down"))
 	m.active = checksTab
 	m.selectedFile = 0
-	_ = m.View()
+	_ = m.compactView()
 	m = apply(m, key("up"))
 	m.state.Snapshot.Checks = []domain.Check{{Name: "running", State: "running", StartedAt: "now"}}
-	_ = m.View()
+	_ = m.compactView()
 	m = apply(m, key("down"))
-	_ = m.View()
+	_ = m.compactView()
 	m.active = reportTab
 	m.state.Reports = []domain.Report{{Text: "no timestamp"}}
-	_ = m.View()
+	_ = m.compactView()
 	m.active = activityTab
 	m.filter = "bug"
 	m.sourceFilter = "assistant"
-	_ = m.View()
+	_ = m.compactView()
 	m.active = chatTab
 	m.composer.SetValue("")
 	m = apply(m, key("up"))
@@ -648,11 +648,11 @@ func TestRemainingInteractionBranches(t *testing.T) {
 	m = apply(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
 	empty := NewModel(domain.State{}, nil).(model)
 	empty.active = checksTab
-	_ = empty.View()
+	_ = empty.compactView()
 	empty.active = agentsTab
-	_ = empty.View()
+	_ = empty.compactView()
 	empty.active = reportTab
-	_ = empty.View()
+	_ = empty.compactView()
 }
 
 func TestProducerSourceFiltersAndMouseTargets(t *testing.T) {
@@ -736,7 +736,7 @@ func TestStreamingAndUserDraftAreSeparateAndComposerPinned(t *testing.T) {
 		m.state.Events = append(m.state.Events, domain.Event{ID: 10 + i, Source: "Codex", Text: strings.Repeat("long timeline item ", 2)})
 	}
 	m.scrollBy(-10)
-	view := m.View()
+	view := m.compactView()
 	if !strings.Contains(view, "my draft jk") || !strings.Contains(view, "Enter sends") {
 		t.Fatalf("composer should stay pinned while timeline scrolls: %q", view)
 	}
@@ -758,7 +758,7 @@ func TestStaleConnectionOverridesGreenChecks(t *testing.T) {
 	s := testState()
 	s.Connection = "GitHub stale after network error"
 	m := NewModel(s, nil).(model)
-	view := m.View()
+	view := m.compactView()
 	if !strings.Contains(view, "CI stale") || strings.Contains(view, "CI passing") {
 		t.Fatalf("stale poll should override last green status: %q", view)
 	}
@@ -793,13 +793,13 @@ func TestTerminalControlSequencesAreRemoved(t *testing.T) {
 	m.width = 100
 	m.height = 40
 	m.active = changesTab
-	view := m.View()
+	view := m.compactView()
 	m.active = activityTab
-	view += m.View()
+	view += m.compactView()
 	m.active = agentsTab
-	view += m.View()
+	view += m.compactView()
 	m.active = reportTab
-	view += m.View()
+	view += m.compactView()
 	if strings.ContainsAny(view, "\x1b\x01\x07") || strings.Contains(view, "PAYLOAD") || strings.Contains(view, "SECRET") {
 		t.Fatalf("terminal controls escaped sanitization: %q", view)
 	}
@@ -821,13 +821,13 @@ func TestRenderedScreenNeverWrapsOrPushesHeaderOffscreen(t *testing.T) {
 		m.noColor = true
 		for pane := tab(0); pane < tab(len(tabNames)); pane++ {
 			m.active = pane
-			assertFits(t, m.View(), width, 32)
+			assertFits(t, m.compactView(), width, 32)
 		}
 		m.quitDialog = true
-		assertFits(t, m.View(), width, 32)
+		assertFits(t, m.compactView(), width, 32)
 		m.quitDialog = false
 		m.commandMode = true
-		assertFits(t, m.View(), width, 32)
+		assertFits(t, m.compactView(), width, 32)
 	}
 }
 func assertFits(t *testing.T, view string, width, height int) {
@@ -858,8 +858,8 @@ func TestLauncherKeepsInvalidURLAvailableForRetry(t *testing.T) {
 	}
 	s := domain.State{Error: "invalid pull request URL"}
 	m = apply(m, stateMsg(s))
-	if !m.launcherMode || m.launcher.Value() != "not a PR URL" || !strings.Contains(m.View(), "invalid pull request URL") {
-		t.Fatalf("invalid URL should remain editable with error: %q", m.View())
+	if !m.launcherMode || m.launcher.Value() != "not a PR URL" || !strings.Contains(m.compactView(), "invalid pull request URL") {
+		t.Fatalf("invalid URL should remain editable with error: %q", m.compactView())
 	}
 	m = apply(m, key("enter"))
 	if len(actions) != 2 || actions[1].Kind != "start" {

@@ -27,6 +27,7 @@ const (
 var tabNames = []string{"Chat", "Changes", "Checks", "Agents", "Report", "Activity"}
 
 type model struct {
+	framed                                           bool
 	state                                            domain.State
 	active                                           tab
 	width, height                                    int
@@ -194,7 +195,7 @@ var newProgram = func(m tea.Model) *tea.Program {
 
 func (m model) Init() tea.Cmd { return textarea.Blink }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case stateMsg:
 		oldN := len(m.state.Events)
@@ -641,7 +642,7 @@ func (m *model) runCommand(s string) {
 	}
 }
 
-func (m model) View() string {
+func (m model) compactView() string {
 	w := m.width
 	if w < 20 {
 		w = 20
@@ -871,7 +872,7 @@ func (m model) chatGeometry(width, height int) ([]string, []int, []string, []int
 	}
 	timeline, mapping := wrapMappedRows(timeline, nil, width)
 	qrows, qmap := m.questionRows(width, height)
-	composer := wrapRows(strings.Split(m.composer.View(), "\n"), width)
+	composer := wrapRows(strings.Split(m.editorView(), "\n"), width)
 	answer := []string{}
 	if m.answerMode {
 		answer = wrapRows([]string{"Freeform answer: " + m.answer.View()}, width)
@@ -917,7 +918,7 @@ func (m model) chatView() string {
 		footer = append(footer, wrapRows([]string{"Freeform answer: " + m.answer.View()}, width)...)
 	}
 	footer = append(footer, "")
-	footer = append(footer, wrapRows(strings.Split(m.composer.View(), "\n"), width)...)
+	footer = append(footer, wrapRows(strings.Split(m.editorView(), "\n"), width)...)
 	contentHeight := max(0, height-3-m.overlayRows())
 	footer = append(footer, wrapRows(chatHelp(height, contentHeight, len(footer)), width)...)
 	lines := append(body, footer...)
