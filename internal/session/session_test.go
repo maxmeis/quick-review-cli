@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"quick-review-cli/internal/domain"
 )
@@ -256,6 +257,10 @@ func TestAppendIOErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	badTime := domain.Event{Time: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	if err := store.Append(badTime); err == nil || !strings.Contains(err.Error(), "encode event") {
+		t.Fatalf("Append marshal error = %v", err)
+	}
 	restore := replaceSessionFS(t, func(ops *filesystemOps) {
 		ops.openFile = func(string, int, os.FileMode) (writableFile, error) { return nil, os.ErrPermission }
 	})
@@ -352,6 +357,9 @@ func TestSaveReportFailurePaths(t *testing.T) {
 		t.Fatalf("SaveReport create error = %v", err)
 	}
 	restore()
+	if entries, err := os.ReadDir(filepath.Join(store.Dir(), "reports")); err != nil || len(entries) != 0 {
+		t.Fatalf("temporary report remained after reservation error: %v %v", entries, err)
+	}
 
 	restore = replaceSessionFS(t, func(ops *filesystemOps) {
 		ops.openFile = func(string, int, os.FileMode) (writableFile, error) { return nil, os.ErrExist }
@@ -363,8 +371,8 @@ func TestSaveReportFailurePaths(t *testing.T) {
 
 	writeErr := errors.New("disk full")
 	restore = replaceSessionFS(t, func(ops *filesystemOps) {
-		ops.openFile = func(string, int, os.FileMode) (writableFile, error) {
-			return &fakeWritableFile{writeErr: writeErr}, nil
+		ops.createTemp = func(string, string) (writableFile, error) {
+			return &fakeWritableFile{name: filepath.Join(store.Dir(), "staging"), writeErr: writeErr}, nil
 		}
 	})
 	if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, writeErr) {
@@ -374,8 +382,8 @@ func TestSaveReportFailurePaths(t *testing.T) {
 
 	closeErr := errors.New("close failed")
 	restore = replaceSessionFS(t, func(ops *filesystemOps) {
-		ops.openFile = func(string, int, os.FileMode) (writableFile, error) {
-			return &fakeWritableFile{closeErr: closeErr}, nil
+		ops.createTemp = func(string, string) (writableFile, error) {
+			return &fakeWritableFile{name: filepath.Join(store.Dir(), "staging"), closeErr: closeErr}, nil
 		}
 	})
 	defer restore()
@@ -383,6 +391,99 @@ func TestSaveReportFailurePaths(t *testing.T) {
 		t.Fatalf("SaveReport close error = %v", err)
 	}
 }
+
+func TestSaveReportAtomicStagingFailures(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	t.Run("create temp", func(t *testing.T) {
+		createErr := errors.New("temp create failed")
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.createTemp = func(string, string) (writableFile, error) { return nil, createErr }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, createErr) {
+			t.Fatalf("create temp error = %v", err)
+		}
+	})
+	t.Run("chmod", func(t *testing.T) {
+		chmodErr := errors.New("chmod failed")
+		removed := false
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.createTemp = func(string, string) (writableFile, error) {
+				return &fakeWritableFile{name: "staging", chmodErr: chmodErr}, nil
+			}
+			ops.remove = func(path string) error { removed = path == "staging"; return nil }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, chmodErr) || !removed {
+			t.Fatalf("chmod failure/cleanup = %v, removed=%v", err, removed)
+		}
+	})
+	t.Run("sync", func(t *testing.T) {
+		syncErr := errors.New("sync failed")
+		removed := false
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.createTemp = func(string, string) (writableFile, error) {
+				return &fakeWritableFile{name: "staging", syncErr: syncErr}, nil
+			}
+			ops.remove = func(path string) error { removed = path == "staging"; return nil }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, syncErr) || !removed {
+			t.Fatalf("sync failure/cleanup = %v, removed=%v", err, removed)
+		}
+	})
+	t.Run("short write", func(t *testing.T) {
+		removed := false
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.createTemp = func(string, string) (writableFile, error) {
+				return &shortWritableFile{name: "staging"}, nil
+			}
+			ops.remove = func(path string) error { removed = path == "staging"; return nil }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, io.ErrShortWrite) || !removed {
+			t.Fatalf("short write/cleanup = %v, removed=%v", err, removed)
+		}
+	})
+	t.Run("reservation close", func(t *testing.T) {
+		closeErr := errors.New("reservation close failed")
+		removed := []string{}
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.openFile = func(string, int, os.FileMode) (writableFile, error) {
+				return &fakeWritableFile{closeErr: closeErr}, nil
+			}
+			ops.remove = func(path string) error { removed = append(removed, path); return nil }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, closeErr) || len(removed) != 2 {
+			t.Fatalf("reservation close/cleanup = %v, removed=%v", err, removed)
+		}
+	})
+	t.Run("rename", func(t *testing.T) {
+		renameErr := errors.New("rename failed")
+		removed := []string{}
+		restore := replaceSessionFS(t, func(ops *filesystemOps) {
+			ops.rename = func(string, string) error { return renameErr }
+			ops.remove = func(path string) error { removed = append(removed, path); return nil }
+		})
+		defer restore()
+		if _, err := store.SaveReport(head, base, "body"); !errors.Is(err, renameErr) || len(removed) != 2 {
+			t.Fatalf("rename failure/cleanup = %v, removed=%v", err, removed)
+		}
+	})
+}
+
+type shortWritableFile struct{ name string }
+
+func (f *shortWritableFile) Name() string              { return f.name }
+func (f *shortWritableFile) Chmod(os.FileMode) error   { return nil }
+func (f *shortWritableFile) Write([]byte) (int, error) { return 0, nil }
+func (f *shortWritableFile) Sync() error               { return nil }
+func (f *shortWritableFile) Close() error              { return nil }
 
 func TestWriteJSONAtomicFailurePaths(t *testing.T) {
 	dir := t.TempDir()

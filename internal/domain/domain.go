@@ -67,22 +67,25 @@ type Question struct {
 	Options []string
 }
 type State struct {
-	Snapshot      Snapshot
-	ReviewedHead  string
-	Phase         string
-	Connection    string
-	Events        []Event
-	Agents        []Agent
-	Reports       []Report
-	Diff          string
-	DraftReply    string
-	Questions     []Question
-	Error         string
-	SessionDir    string
-	ThreadID      string
-	QuitRequested bool
-	ClosedPrompt  bool
-	Paused        bool
+	PendingMessages []string
+	WatcherContext  string
+	RefreshPending  bool
+	Snapshot        Snapshot
+	ReviewedHead    string
+	Phase           string
+	Connection      string
+	Events          []Event
+	Agents          []Agent
+	Reports         []Report
+	Diff            string
+	DraftReply      string
+	Questions       []Question
+	Error           string
+	SessionDir      string
+	ThreadID        string
+	QuitRequested   bool
+	ClosedPrompt    bool
+	Paused          bool
 }
 
 // Actions are submitted by the interface to the single controller event loop.

@@ -279,9 +279,10 @@ func (s *Store) Dir() string { return s.dir }
 
 // Append appends one event to the session's JSONL event log.
 func (s *Store) Append(event domain.Event) error {
-	// domain.Event contains only JSON-safe scalar fields, so encoding cannot
-	// fail for a valid in-memory Event value.
-	b, _ := json.Marshal(event)
+	b, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("encode event: %w", err)
+	}
 	f, err := sessionFS.openFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open event log: %w", err)
@@ -326,6 +327,31 @@ func (s *Store) SaveReport(head, base, text string) (domain.Report, error) {
 	if err := sessionFS.mkdirAll(reportsDir, 0o700); err != nil {
 		return report, fmt.Errorf("create reports directory: %w", err)
 	}
+	f, err := sessionFS.createTemp(reportsDir, ".review-*.tmp")
+	if err != nil {
+		return report, fmt.Errorf("create temporary report: %w", err)
+	}
+	tmpPath := f.Name()
+	defer sessionFS.remove(tmpPath)
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return report, fmt.Errorf("secure temporary report: %w", err)
+	}
+	written, writeErr := io.WriteString(f, text)
+	if writeErr == nil && written != len(text) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr != nil {
+		_ = f.Close()
+		return report, fmt.Errorf("write temporary report: %w", writeErr)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return report, fmt.Errorf("sync temporary report: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return report, fmt.Errorf("close temporary report: %w", err)
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		randomID := make([]byte, 4)
 		if _, err := sessionFS.randomRead(randomID); err != nil {
@@ -340,15 +366,13 @@ func (s *Store) SaveReport(head, base, text string) (domain.Report, error) {
 		if err != nil {
 			return report, fmt.Errorf("create report: %w", err)
 		}
-		_, writeErr := io.WriteString(f, text)
-		closeErr := f.Close()
-		if writeErr != nil {
+		if closeErr := f.Close(); closeErr != nil {
 			_ = sessionFS.remove(path)
-			return report, fmt.Errorf("write report: %w", writeErr)
+			return report, fmt.Errorf("close report reservation: %w", closeErr)
 		}
-		if closeErr != nil {
+		if err := sessionFS.rename(tmpPath, path); err != nil {
 			_ = sessionFS.remove(path)
-			return report, fmt.Errorf("close report: %w", closeErr)
+			return report, fmt.Errorf("publish report: %w", err)
 		}
 		report = domain.Report{Path: path, HeadSHA: head, BaseSHA: base, Text: text, CreatedAt: time.Now().UTC()}
 		return report, nil
